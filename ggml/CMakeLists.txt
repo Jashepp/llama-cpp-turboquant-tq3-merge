@@ -1,6 +1,19 @@
 cmake_minimum_required(VERSION 3.14...3.28) # for add_link_options and implicit target directories.
 
-project("ggml" C CXX ASM)
+# ref: https://cmake.org/cmake/help/latest/policy/CMP0194.html
+# MSVC is not a valid assembler for the generic ASM language.
+# Set to NEW to avoid a warning on CMake 4.1+ with MSVC.
+if (POLICY CMP0194)
+    cmake_policy(SET CMP0194 NEW)
+endif()
+
+project("ggml" C CXX)
+
+if (MSVC)
+    enable_language(ASM_MASM OPTIONAL)
+else()
+    enable_language(ASM)
+endif()
 
 ### GGML Version
 set(GGML_VERSION_MAJOR 0)

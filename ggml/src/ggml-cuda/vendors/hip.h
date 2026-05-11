@@ -54,6 +54,9 @@
 #define __SHFL_DOWN_SYNC_4(mask, var, delta, width) __shfl_down(var, delta, width)
 #define __SHFL_DOWN_GET(_1, _2, _3, _4, NAME, ...) NAME
 #define __shfl_down_sync(...) __SHFL_DOWN_GET(__VA_ARGS__, __SHFL_DOWN_SYNC_4, __SHFL_DOWN_SYNC_3)(__VA_ARGS__)
+// #define __shfl_sync(mask, var, laneMask, ...) __shfl(var, laneMask, ##__VA_ARGS__)
+// #define __shfl_up_sync(mask, var, laneMask, ...) __shfl_up(var, laneMask, ##__VA_ARGS__)
+// #define __shfl_xor_sync(mask, var, laneMask, ...) __shfl_xor(var, laneMask, ##__VA_ARGS__)
 #define __all_sync(mask, var) __all(var)
 #define __any_sync(mask, var) __any(var)
 #define __ballot_sync(mask, var) ((uint32_t)__ballot(var))
@@ -81,8 +84,10 @@
 #define cudaErrorMemoryAllocation hipErrorOutOfMemory
 #define cudaErrorPeerAccessAlreadyEnabled hipErrorPeerAccessAlreadyEnabled
 #define cudaErrorPeerAccessNotEnabled hipErrorPeerAccessNotEnabled
+#define cudaEventCreate hipEventCreate
 #define cudaEventCreateWithFlags hipEventCreateWithFlags
 #define cudaEventDisableTiming hipEventDisableTiming
+#define cudaEventElapsedTime hipEventElapsedTime
 #define cudaEventRecord hipEventRecord
 #define cudaEventSynchronize hipEventSynchronize
 #define cudaEvent_t hipEvent_t

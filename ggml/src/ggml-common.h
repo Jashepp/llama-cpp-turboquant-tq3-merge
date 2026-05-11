@@ -348,25 +348,66 @@ static_assert(sizeof(block_turbo2_0) == sizeof(ggml_half) + QK_TURBO2/4, "wrong 
 // Block size 32, dual half-block scales (d0 for [0..15], d1 for [16..31])
 // Per block: d0(fp16) + d1(fp16) + 3-bit indices packed (12 bytes) = 16 bytes per 32 values
 // = 4.0 bits/value
-#define QK_TQ3_0 32
-typedef struct {
-    ggml_half d0;                       //  2 bytes: scale for first 16 elements
-    ggml_half d1;                       //  2 bytes: scale for last 16 elements
-    uint8_t   qs[QK_TQ3_0 * 3 / 8];   // 12 bytes: 3-bit indices packed (4 groups of 8 in 3 bytes)
-} block_tq3_1s;                         // 16 bytes total
-static_assert(sizeof(block_tq3_1s) == 16, "wrong tq3_1s block size");
+// #define QK_TQ3_0 32
+// typedef struct {
+//     ggml_half d0;                       //  2 bytes: scale for first 16 elements
+//     ggml_half d1;                       //  2 bytes: scale for last 16 elements
+//     uint8_t   qs[QK_TQ3_0 * 3 / 8];   // 12 bytes: 3-bit indices packed (4 groups of 8 in 3 bytes)
+// } block_tq3_1s;                         // 16 bytes total
+// static_assert(sizeof(block_tq3_1s) == 16, "wrong tq3_1s block size");
 
 // TQ4_1S: WHT-rotated 4-bit weight quantization (16-level Lloyd-Max for N(0,1))
 // Block size 32, dual half-block scales (d0 for [0..15], d1 for [16..31])
 // Per block: d0(fp16) + d1(fp16) + 4-bit indices packed (16 bytes) = 20 bytes per 32 values
 // = 5.0 bits/value
-#define QK_TQ4_1S 32
+// #define QK_TQ4_1S 32
+// typedef struct {
+//     ggml_half d0;                       //  2 bytes: scale for first 16 elements
+//     ggml_half d1;                       //  2 bytes: scale for last 16 elements
+//     uint8_t   qs[QK_TQ4_1S / 2];      // 16 bytes: 4-bit indices nibble-packed
+// } block_tq4_1s;                         // 20 bytes total
+// static_assert(sizeof(block_tq4_1s) == 20, "wrong tq4_1s block size");
+
+// TurboQuant 3-bit (3.5 bpw)
+// 32 values per block, WHT rotation + Lloyd-Max 8-level codebook
+#define QK_TQ3_0 32
 typedef struct {
-    ggml_half d0;                       //  2 bytes: scale for first 16 elements
-    ggml_half d1;                       //  2 bytes: scale for last 16 elements
-    uint8_t   qs[QK_TQ4_1S / 2];      // 16 bytes: 4-bit indices nibble-packed
-} block_tq4_1s;                         // 20 bytes total
-static_assert(sizeof(block_tq4_1s) == 20, "wrong tq4_1s block size");
+    ggml_half d;                    // scale factor (RMS of block)
+    uint8_t qs[QK_TQ3_0 * 3 / 8];  // 3-bit quant indices, packed (12 bytes)
+} block_tq3_0;
+static_assert(sizeof(block_tq3_0) == sizeof(ggml_half) + QK_TQ3_0 * 3 / 8, "wrong tq3_0 block size/padding");
+
+// TQ3's TurboQuant 3-bit with two half-block scales (4.0 bpw)
+typedef struct {
+    ggml_half d0;
+    ggml_half d1;
+    uint8_t qs[QK_TQ3_0 * 3 / 8];
+} block_tq3_1s;
+static_assert(sizeof(block_tq3_1s) == 2 * sizeof(ggml_half) + QK_TQ3_0 * 3 / 8, "wrong tq3_1s block size/padding");
+
+// TurboQuant 3-bit with four u8 per-8 scales (4.0 bpw)
+// Each d[g] is an E3M5 mini-float: scale = 2^(d>>5 - 9) * (1 + (d&31)/32)
+typedef struct {
+    uint8_t   d[4];                // 4 × E3M5 scales for groups of 8 elements
+    uint8_t   qs[QK_TQ3_0 * 3 / 8]; // 12 bytes: 32 × 3-bit packed indices
+} block_tq3_4s;
+static_assert(sizeof(block_tq3_4s) == 4 + QK_TQ3_0 * 3 / 8, "wrong tq3_4s block size/padding");
+
+// TurboQuant 3-bit with one promoted shared-shift block per 16 logical TQ3_1S blocks.
+// Fixed layout per 512 weights:
+// - 2-byte bitmap with exactly one promoted logical slot bit set
+// - 15 contiguous base TQ3_1S blocks (all non-promoted logical blocks)
+// - 1 fixed promoted shared-shift trailer
+//
+// This keeps the superblock size unchanged while removing mixed-stream pointer
+// walking from the hot decode path.
+typedef struct {
+    ggml_half d0;
+    ggml_half d1;
+    ggml_half m;
+    uint8_t qs[QK_TQ3_0 * 3 / 8];
+} block_tq3_1s_shift;
+static_assert(sizeof(block_tq3_1s_shift) == 3 * sizeof(ggml_half) + QK_TQ3_0 * 3 / 8, "wrong tq3_1s_shift block size/padding");
 
 //
 // Super-block quantization structures

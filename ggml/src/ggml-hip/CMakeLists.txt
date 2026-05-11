@@ -103,6 +103,8 @@ else()
         ../ggml-cuda/template-instances/fattn-vec-instance-turbo3_0-turbo4_0.cu
         ../ggml-cuda/template-instances/fattn-vec-instance-turbo4_0-turbo2_0.cu
         ../ggml-cuda/template-instances/fattn-vec-instance-turbo2_0-turbo4_0.cu)
+        # ../ggml-cuda/template-instances/fattn-vec-instance-q8_0-bf16.cu
+        # ../ggml-cuda/template-instances/fattn-vec-instance-bf16-q8_0.cu)
 endif()
 
 ggml_add_backend_library(ggml-hip

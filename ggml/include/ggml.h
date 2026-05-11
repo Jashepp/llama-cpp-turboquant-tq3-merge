@@ -429,12 +429,17 @@ extern "C" {
         GGML_TYPE_MXFP4   = 39, // MXFP4 (1 block)
         GGML_TYPE_NVFP4   = 40, // NVFP4 (4 blocks, E4M3 scale)
         GGML_TYPE_Q1_0    = 41,
-        GGML_TYPE_TURBO2_0 = 42, // TurboQuant 2-bit KV cache: WHT + 2-bit PolarQuant
-        GGML_TYPE_TURBO3_0 = 43, // TurboQuant 3-bit KV cache: WHT + 3-bit PolarQuant
-        GGML_TYPE_TURBO4_0 = 44, // TurboQuant 4-bit KV cache: WHT + 4-bit PolarQuant
-        GGML_TYPE_TQ3_1S  = 45, // TurboQuant 3-bit weight: WHT-rotated 8-level Lloyd-Max, block_size=32
-        GGML_TYPE_TQ4_1S  = 46, // TurboQuant 4-bit weight: WHT-rotated 16-level Lloyd-Max, block_size=32
-        GGML_TYPE_COUNT   = 47,
+        GGML_TYPE_TURBO2_0 = 42, // old=42 TurboQuant-fork 2-bit KV cache: WHT + 2-bit PolarQuant
+        GGML_TYPE_TURBO3_0 = 43, // old=43 TurboQuant-fork 3-bit KV cache: WHT + 3-bit PolarQuant
+        GGML_TYPE_TURBO4_0 = 198, // old=44 TurboQuant-fork 4-bit KV cache: WHT + 4-bit PolarQuant
+        // GGML_TYPE_TQ3_1S  = 45, // old=45 TurboQuant-fork 3-bit weight: WHT-rotated 8-level Lloyd-Max, block_size=32
+        // GGML_TYPE_TQ4_1S  = 46, // old=46 TurboQuant-fork 4-bit weight: WHT-rotated 16-level Lloyd-Max, block_size=32
+        // GGML_TYPE_COUNT   = 47,
+        GGML_TYPE_TQ3_1S  = 44, // old=44 tq3-fork TurboQuant 3-bit with two half-block scales
+        GGML_TYPE_TQ3_4S  = 46, // old=46 tq3-fork TurboQuant 3-bit with four u8 per-8 scales (4.0 bpw)
+        // tq3-fork internal-only types at high IDs to avoid upstream conflicts
+        GGML_TYPE_TQ3_0      = 200, // tq3-fork KV-cache only
+        GGML_TYPE_COUNT      = 201,
     };
 
     // precision
@@ -584,6 +589,7 @@ extern "C" {
 
         GGML_OP_CROSS_ENTROPY_LOSS,
         GGML_OP_CROSS_ENTROPY_LOSS_BACK,
+        // GGML_OP_TURBO_WHT,
         GGML_OP_OPT_STEP_ADAMW,
         GGML_OP_OPT_STEP_SGD,
 
@@ -2659,6 +2665,12 @@ extern "C" {
             struct ggml_tensor  * a,  // logits
             struct ggml_tensor  * b,  // labels
             struct ggml_tensor  * c); // gradients of cross_entropy_loss result
+
+    // TurboQuant WHT rotation: out[i] = WHT(sign*in)[i] / sqrt(block_size)
+    // Applied to activations before TQ3_0 weight matmul to eliminate WHT from kernels
+    GGML_API struct ggml_tensor * ggml_turbo_wht_tq3(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * a);
 
     // AdamW optimizer step
     // Paper: https://arxiv.org/pdf/1711.05101v3.pdf

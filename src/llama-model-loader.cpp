@@ -16,6 +16,7 @@
 static const size_t kiB = 1024;
 static const size_t MiB = 1024*kiB;
 static const size_t GiB = 1024*MiB;
+static const char * const LLAMA_KV_GENERAL_QUANTIZATION_ALIAS = "general.quantization_alias";
 
 const char * llama_file_version_name(llama_fver version) {
     switch (version) {
@@ -56,8 +57,11 @@ static std::string llama_model_ftype_name(llama_ftype ftype) {
         case LLAMA_FTYPE_MOSTLY_Q6_K:     return "Q6_K";
         case LLAMA_FTYPE_MOSTLY_TQ1_0:    return "TQ1_0 - 1.69 bpw ternary";
         case LLAMA_FTYPE_MOSTLY_TQ2_0:    return "TQ2_0 - 2.06 bpw ternary";
-        case LLAMA_FTYPE_MOSTLY_TQ3_1S:   return "TQ3_1S - 4.0 bpw WHT-rotated 3-bit";
-        case LLAMA_FTYPE_MOSTLY_TQ4_1S:   return "TQ4_1S - 5.0 bpw WHT-rotated 4-bit";
+        // case LLAMA_FTYPE_MOSTLY_TQ3_1S:   return "TQ3_1S - 4.0 bpw WHT-rotated 3-bit";
+        // case LLAMA_FTYPE_MOSTLY_TQ4_1S:   return "TQ4_1S - 5.0 bpw WHT-rotated 4-bit";
+        case LLAMA_FTYPE_MOSTLY_TQ3_0:    return "TQ3_0 - 3.50 bpw turbo";
+        case LLAMA_FTYPE_MOSTLY_TQ3_1S:   return "TQ3_1S - 4.00 bpw turbo two-scale";
+        case LLAMA_FTYPE_MOSTLY_TQ3_4S:   return "TQ3_4S - 4.00 bpw turbo four-scale";
         case LLAMA_FTYPE_MOSTLY_IQ2_XXS:  return "IQ2_XXS - 2.0625 bpw";
         case LLAMA_FTYPE_MOSTLY_IQ2_XS:   return "IQ2_XS - 2.3125 bpw";
         case LLAMA_FTYPE_MOSTLY_IQ2_S:    return "IQ2_S - 2.5 bpw";
@@ -751,8 +755,11 @@ llama_model_loader::llama_model_loader(
             case GGML_TYPE_Q6_K:    ftype = LLAMA_FTYPE_MOSTLY_Q6_K;    break;
             case GGML_TYPE_TQ1_0:   ftype = LLAMA_FTYPE_MOSTLY_TQ1_0;   break;
             case GGML_TYPE_TQ2_0:   ftype = LLAMA_FTYPE_MOSTLY_TQ2_0;   break;
+            // case GGML_TYPE_TQ3_1S:  ftype = LLAMA_FTYPE_MOSTLY_TQ3_1S;  break;
+            // case GGML_TYPE_TQ4_1S:  ftype = LLAMA_FTYPE_MOSTLY_TQ4_1S;  break;
+            case GGML_TYPE_TQ3_0:   ftype = LLAMA_FTYPE_MOSTLY_TQ3_0;   break;
             case GGML_TYPE_TQ3_1S:  ftype = LLAMA_FTYPE_MOSTLY_TQ3_1S;  break;
-            case GGML_TYPE_TQ4_1S:  ftype = LLAMA_FTYPE_MOSTLY_TQ4_1S;  break;
+            case GGML_TYPE_TQ3_4S:  ftype = LLAMA_FTYPE_MOSTLY_TQ3_4S;  break;
             case GGML_TYPE_IQ2_XXS: ftype = LLAMA_FTYPE_MOSTLY_IQ2_XXS; break;
             case GGML_TYPE_IQ2_XS:  ftype = LLAMA_FTYPE_MOSTLY_IQ2_XS;  break;
             case GGML_TYPE_IQ2_S:   ftype = LLAMA_FTYPE_MOSTLY_IQ2_S;   break;
@@ -780,6 +787,7 @@ llama_model_loader::llama_model_loader(
                 ftype = (llama_ftype) ftype_val;
             }
         }
+        get_key(LLAMA_KV_GENERAL_QUANTIZATION_ALIAS, ftype_alias, false);
 
         LLAMA_LOG_INFO("%s: Dumping metadata keys/values. Note: KV overrides do not apply in this output.\n", __func__);
 
@@ -1317,8 +1325,20 @@ struct ggml_tensor * llama_model_loader::create_tensor_as_view(struct ggml_conte
 }
 
 void llama_model_loader::done_getting_tensors() const {
-    if (n_created != n_tensors) {
-        throw std::runtime_error(format("%s: wrong number of tensors; expected %d, got %d", __func__, n_tensors, n_created));
+    int n_expected_created = 0;
+    for (const auto & it : weights_map) {
+        const std::string & name = it.first;
+        if (name.size() >= 14 && name.rfind(".tq3_ap_bitmap") == name.size() - 14) {
+            continue;
+        }
+        if (name.size() >= 16 && name.rfind(".tq3_ap_promoted") == name.size() - 16) {
+            continue;
+        }
+        ++n_expected_created;
+    }
+
+    if (n_created != n_expected_created) {
+        throw std::runtime_error(format("%s: wrong number of tensors; expected %d, got %d", __func__, n_expected_created, n_created));
     }
     if (n_tensors_moved > 0) {
         LLAMA_LOG_DEBUG("%s: tensor '%s' (%s) (and %zu others) cannot be used with preferred buffer type %s, using %s instead\n",
@@ -1397,6 +1417,26 @@ void llama_model_loader::load_data_for(struct ggml_tensor * cur) const {
 
     if (check_tensors && !ggml_validate_row_data(cur->type, cur->data, ggml_nbytes(cur))) {
         throw std::runtime_error(format("tensor '%s' has invalid data", ggml_get_name(cur)));
+    }
+}
+
+void llama_model_loader::load_data_for_name(const char * name, void * dst, size_t size) const {
+    const auto & w = require_weight(name);
+    GGML_ASSERT(dst != nullptr);
+    GGML_ASSERT(size == ggml_nbytes(w.tensor));
+
+    if (use_mmap) {
+        const auto & mapping = mappings.at(w.idx);
+        memcpy(dst, (uint8_t *) mapping->addr() + w.offs, size);
+    } else {
+        GGML_ASSERT(w.idx < files.size());
+        const auto & file = files.at(w.idx);
+        file->seek(w.offs, SEEK_SET);
+        file->read_raw(dst, size);
+    }
+
+    if (check_tensors && !ggml_validate_row_data(w.tensor->type, dst, size)) {
+        throw std::runtime_error(format("tensor '%s' has invalid data", name));
     }
 }
 

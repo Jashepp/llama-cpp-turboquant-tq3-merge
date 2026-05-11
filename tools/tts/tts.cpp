@@ -550,6 +550,8 @@ int main(int argc, char ** argv) {
 
     params.sampling.top_k = 4;
     params.sampling.samplers = { COMMON_SAMPLER_TYPE_TOP_K, };
+    // params.sampling.samplers.clear();
+    // params.sampling.samplers.push_back(COMMON_SAMPLER_TYPE_TOP_K);
 
     common_init();
 

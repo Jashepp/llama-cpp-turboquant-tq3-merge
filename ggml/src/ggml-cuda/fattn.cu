@@ -363,6 +363,29 @@ static void ggml_cuda_flash_attn_ext_vec(ggml_backend_cuda_context & ctx, ggml_t
     // Mixed turbo4/turbo2 KV cache types
     FATTN_VEC_CASES_ALL_D(GGML_TYPE_TURBO4_0, GGML_TYPE_TURBO2_0)
     FATTN_VEC_CASES_ALL_D(GGML_TYPE_TURBO2_0, GGML_TYPE_TURBO4_0)
+    
+    // IMPORTANT: Make sure this is the same as the lists in:
+    //    ggml\src\ggml-cuda\CMakeLists.txt
+    //    ggml\src\ggml-cuda\fattn-vec.cuh
+    
+    // template-instances/fattn-vec-instance-q4_0-tq3_0.cu
+    // template-instances/fattn-vec-instance-q8_0-tq3_0.cu
+    // template-instances/fattn-vec-instance-f16-tq3_0.cu
+    // template-instances/fattn-vec-instance-tq3_0-tq3_0.cu
+    // template-instances/fattn-vec-instance-turbo2_0-tq3_0.cu
+    // template-instances/fattn-vec-instance-turbo3_0-tq3_0.cu
+    // template-instances/fattn-vec-instance-turbo4_0-tq3_0.cu
+    
+    // TQ3_0
+    FATTN_VEC_CASES_ALL_D(GGML_TYPE_Q4_0,     GGML_TYPE_TQ3_0)
+    FATTN_VEC_CASES_ALL_D(GGML_TYPE_Q8_0,     GGML_TYPE_TQ3_0)
+    FATTN_VEC_CASES_ALL_D(GGML_TYPE_F16,      GGML_TYPE_TQ3_0)
+    FATTN_VEC_CASES_ALL_D(GGML_TYPE_TQ3_0,    GGML_TYPE_TQ3_0)
+    
+    // Turbo + TQ3_0
+    FATTN_VEC_CASES_ALL_D(GGML_TYPE_TURBO2_0, GGML_TYPE_TQ3_0)
+    FATTN_VEC_CASES_ALL_D(GGML_TYPE_TURBO3_0, GGML_TYPE_TQ3_0)
+    FATTN_VEC_CASES_ALL_D(GGML_TYPE_TURBO4_0, GGML_TYPE_TQ3_0)
 
     GGML_ABORT("fatal error");
 }
@@ -460,9 +483,10 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
         // - f16/bf16 + q8_0 (common K=f16, V=q8_0 setup)
         auto is_kv_compat = [](ggml_type t) {
             return t == GGML_TYPE_TURBO2_0 || t == GGML_TYPE_TURBO3_0 || t == GGML_TYPE_TURBO4_0
-                || t == GGML_TYPE_Q8_0 || t == GGML_TYPE_F16 || t == GGML_TYPE_BF16;
+                || t == GGML_TYPE_Q8_0 || t == GGML_TYPE_F16 || t == GGML_TYPE_BF16
+                || t == GGML_TYPE_TQ3_0;
         };
-        if (!is_kv_compat(K->type) || !is_kv_compat(V->type)) {
+        if (!is_kv_compat(K->type) || !is_kv_compat(V->type) || (K->type == GGML_TYPE_Q4_0 && V->type == GGML_TYPE_TQ3_0)) {
             return BEST_FATTN_KERNEL_NONE;
         }
     }
@@ -481,6 +505,7 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
         case GGML_TYPE_Q4_0:
         case GGML_TYPE_Q8_0:
         case GGML_TYPE_BF16:
+        case GGML_TYPE_TQ3_0:
             break;
         case GGML_TYPE_TURBO3_0:
             // turbo3 VEC kernel instantiated for D in {64, 128, 256}.

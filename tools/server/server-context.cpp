@@ -1586,6 +1586,8 @@ private:
         } else {
             res->content = tkn.text_to_send;
             res->tokens  = { tkn.tok };
+            // res->tokens.clear();
+            // res->tokens.push_back(tkn.tok);
         }
 
         res->n_decoded             = slot.n_decoded;
