@@ -8,7 +8,7 @@ This fork brings together TurboQuant's `turbo2`, `turbo3`, `turbo4` KV-cache typ
 Due to type conflicts, this is not compatible with TurboQuant's `TQ3_1S` and `TQ4_1S` weighted models:
 - Disabled TurboQuant's `GGML_TYPE_TQ3_1S` weight with ID `45`
 - Disabled TurboQuant's `GGML_TYPE_TQ4_1S` weight with ID `46`
-- Changed TurboQuant's `GGML_TYPE_TURBO4_0` to ID `198`, since it's used for KV-cache only, and ID `44` is needed by `TQ3_1S`
+- Changed TurboQuant's `GGML_TYPE_TURBO4_0` to ID `198`, since it's used for KV-cache only, and ID `44` is needed by tq3's `TQ3_1S`
 - Using tq3's `GGML_TYPE_TQ3_1S` weight with ID `44`
 
 **Notes:**
@@ -20,14 +20,12 @@ If you want to contribute meaningful changes/improvements, consider forking this
 
 ## What can this do?
 
-This allows TurboQuant's KV-cache types to be used on tq3's weighted models.
+This allows TurboQuant's KV-cache types to be used on tq3's weighted models (or any gguf model).
 
 For example: TurboQuant's `turbo4` with tq3's `tq3_0`
 ```
 llama-server --cache-type-k turbo4 --cache-type-v tq3_0
 ```
-
-**Note:** `tq3_0` is only usable on tq3's `TQ3_1S` and `TQ3_4S` weighted models, such as: [YTan2000/Qwen3.6-35B-A3B-TQ3_4S](https://huggingface.co/YTan2000/Qwen3.6-35B-A3B-TQ3_4S)
 
 ## Why?
 

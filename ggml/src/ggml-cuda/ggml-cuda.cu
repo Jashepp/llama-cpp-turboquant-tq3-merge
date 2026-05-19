@@ -2506,10 +2506,18 @@ static bool ggml_cuda_should_fuse_mul_mat_vec_q(const ggml_tensor * tensor) {
                                    ggml_nbytes(src0) != ggml_backend_buffer_get_alloc_size(src0->buffer, src0) &&
                                    src0->view_src;
 
-    const bool is_tq_weight = (src0->type == GGML_TYPE_TQ3_0); // src0->type == GGML_TYPE_TQ4_1S || src0->type == GGML_TYPE_TQ3_1S || 
-    bool use_mul_mat_vec_q = ggml_is_quantized(src0->type) && !bad_padding_clear && !is_tq_weight &&
-                             src1->type == GGML_TYPE_F32 &&
-                             dst->type == GGML_TYPE_F32 && src1->ne[1] <= MMVQ_MAX_BATCH_SIZE;
+    // const bool is_tq_weight = (src0->type == GGML_TYPE_TQ3_0); // src0->type == GGML_TYPE_TQ4_1S || src0->type == GGML_TYPE_TQ3_1S || 
+    // bool use_mul_mat_vec_q = ggml_is_quantized(src0->type) && !bad_padding_clear && !is_tq_weight &&
+    //                          src1->type == GGML_TYPE_F32 &&
+    //                          dst->type == GGML_TYPE_F32 && src1->ne[1] <= MMVQ_MAX_BATCH_SIZE;
+
+    const bool tq3_vec_prefill_ok = (src0->type != GGML_TYPE_TQ3_0 && src0->type != GGML_TYPE_TQ3_1S) || src1->ne[1] == 1;
+    const bool use_mul_mat_vec_q = tq3_vec_prefill_ok
+        && ggml_cuda_can_use_mul_mat_vec_q(src0->type, src1->type, dst->type, src1->ne[1], bad_padding_clear);
+    const bool use_mul_mat_vec_q_direct = use_mul_mat_vec_q
+        && (src0->type != GGML_TYPE_TQ3_0 || ggml_is_contiguous(src0))
+        && (src0->type != GGML_TYPE_TQ3_1S || ggml_is_contiguous(src0))
+        && (src0->type != GGML_TYPE_TQ3_4S || ggml_is_contiguous(src0));
 
     // fusion is not universally faster on Pascal
     const int cc = ggml_cuda_info().devices[ggml_cuda_get_device()].cc;
@@ -2550,13 +2558,28 @@ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor
         && src1->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32;
     bool use_mul_mat_f     = !ggml_is_quantized(src0->type)
         && src1->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32;
+
     // TQ weight types use fused dp4a path (all batch sizes), not mmvq/mmq
-    const bool is_tq_weight = (src0->type == GGML_TYPE_TQ3_0); // src0->type == GGML_TYPE_TQ4_1S || src0->type == GGML_TYPE_TQ3_1S
-    bool use_mul_mat_vec_q = ggml_is_quantized(src0->type) && !bad_padding_clear && !is_tq_weight
-        && src1->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32
-        && src1->ne[1] <= MMVQ_MAX_BATCH_SIZE;
-    bool use_mul_mat_q     = ggml_is_quantized(src0->type) && !bad_padding_clear && !is_tq_weight
-        && src1->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32;
+    // const bool is_tq_weight = (src0->type == GGML_TYPE_TQ4_1S || src0->type == GGML_TYPE_TQ3_1S);
+    // bool use_mul_mat_vec_q = ggml_is_quantized(src0->type) && !bad_padding_clear && !is_tq_weight
+    //     && src1->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32
+    //     && src1->ne[1] <= MMVQ_MAX_BATCH_SIZE;
+    // bool use_mul_mat_q     = ggml_is_quantized(src0->type) && !bad_padding_clear && !is_tq_weight
+    //     && src1->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32;
+
+    const bool tq3_vec_prefill_ok = (src0->type != GGML_TYPE_TQ3_0 && src0->type != GGML_TYPE_TQ3_1S) || src1->ne[1] == 1;
+    const bool use_mul_mat_vec_q = tq3_vec_prefill_ok
+        && ggml_cuda_can_use_mul_mat_vec_q(src0->type, src1->type, dst->type, src1->ne[1], bad_padding_clear);
+    const bool use_mul_mat_vec_q_direct = use_mul_mat_vec_q
+        && (src0->type != GGML_TYPE_TQ3_0 || ggml_is_contiguous(src0))
+        && (src0->type != GGML_TYPE_TQ3_1S || ggml_is_contiguous(src0))
+        && (src0->type != GGML_TYPE_TQ3_4S || ggml_is_contiguous(src0));
+    const bool tq3_mmq_ok = (src0->type != GGML_TYPE_TQ3_0 || ggml_is_contiguous(src0))
+        && (src0->type != GGML_TYPE_TQ3_1S || ggml_is_contiguous(src0))
+        && (src0->type != GGML_TYPE_TQ3_4S || ggml_is_contiguous(src0));
+    const bool tq3_1s_mmq_ok = src0->type != GGML_TYPE_TQ3_1S;
+    bool use_mul_mat_q     = ggml_is_quantized(src0->type) && !bad_padding_clear
+        && src1->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32 && tq3_mmq_ok && tq3_1s_mmq_ok;
 
     bool any_gpus_with_slow_fp16 = false;
 
@@ -2609,7 +2632,9 @@ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor
         ggml_cuda_mul_mat_vec_f(ctx, src0, src1, nullptr, dst);
     } else if (!split && use_mul_mat_f) {
         ggml_cuda_mul_mat_f(ctx, src0, src1, nullptr, dst);
-    } else if (!split && use_mul_mat_vec_q) {
+    // } else if (!split && use_mul_mat_vec_q) {
+    //     ggml_cuda_mul_mat_vec_q(ctx, src0, src1, nullptr, dst);
+    } else if (!split && use_mul_mat_vec_q_direct) {
         ggml_cuda_mul_mat_vec_q(ctx, src0, src1, nullptr, dst);
     } else if (!split && use_mul_mat_q) {
         ggml_cuda_mul_mat_q(ctx, src0, src1, nullptr, dst);
@@ -2623,10 +2648,10 @@ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor
         ggml_cuda_op_mul_mat(ctx, src0, src1, dst, ggml_cuda_op_mul_mat_vec_q, quantize_row_q8_1_cuda);
     } else if (use_mul_mat_q) {
         ggml_cuda_op_mul_mat(ctx, src0, src1, dst, ggml_cuda_op_mul_mat_q, quantize_mmq_q8_1_cuda);
-    } else if (!split && is_tq_weight && src1->ne[1] <= MMVQ_MAX_BATCH_SIZE) {
-        // Fused TQ weight mul_mat with pre-rotated activations via warp shuffle WHT
-        // Handles ne[1]=1 (decode) and ne[1]≤8 (multi-token / speculative decoding)
-        ggml_cuda_mul_mat_tq(ctx, src0, src1, dst);
+    // } else if (!split && is_tq_weight && src1->ne[1] <= MMVQ_MAX_BATCH_SIZE) {
+    //     // Fused TQ weight mul_mat with pre-rotated activations via warp shuffle WHT
+    //     // Handles ne[1]=1 (decode) and ne[1]≤8 (multi-token / speculative decoding)
+    //     ggml_cuda_mul_mat_tq(ctx, src0, src1, dst);
     // } else if (!split && is_tq_weight && src0->type == GGML_TYPE_TQ4_1S) {
     //     // Large prefill: runtime TQ4_1S → q8_0 scratch conversion + cuBLAS
     //     // Gets tensor core throughput without permanent 1.7× VRAM cost
