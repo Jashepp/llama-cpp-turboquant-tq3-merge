@@ -7,7 +7,6 @@
 #include "log.h"
 #include "llama.h"
 #include "sampling.h"
-#include "speculative.h"
 #include "unicode.h"
 
 #include <algorithm>
@@ -26,6 +25,7 @@
 #include <sstream>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -1172,8 +1172,7 @@ common_init_result::common_init_result(common_params & params) :
     auto cparams = common_context_params_to_llama(params);
 
     if (params.fit_params) {
-        LOG_INF("%s: fitting params to device memory ...\n", __func__);
-        LOG_INF("%s: (for bugs during this step try to reproduce them with -fit off, or provide --verbose logs if the bug only occurs with -fit on)\n", __func__);
+        LOG_INF("%s: fitting params to device memory, for bugs during this step try to reproduce them with -fit off, or provide --verbose logs if the bug only occurs with -fit on\n", __func__);
         common_fit_params(params.model.path.c_str(), &mparams, &cparams,
             params.tensor_split,
             params.tensor_buft_overrides.data(),
@@ -1222,7 +1221,7 @@ common_init_result::common_init_result(common_params & params) :
     // initialize once
     for (llama_token i = 0; i < llama_vocab_n_tokens(vocab); i++) {
         if (llama_vocab_is_eog(vocab, i)) {
-            LOG_TRC("%s: added %s logit bias = %f\n", __func__, common_token_to_piece(vocab, i).c_str(), -INFINITY);
+            LOG_INF("%s: added %s logit bias = %f\n", __func__, common_token_to_piece(vocab, i).c_str(), -INFINITY);
             params.sampling.logit_bias_eog.push_back({i, -INFINITY});
         }
     }
@@ -1235,12 +1234,12 @@ common_init_result::common_init_result(common_params & params) :
     }
 
     //if (params.sampling.penalty_last_n == -1) {
-    //    LOG_TRC("%s: setting penalty_last_n to ctx_size = %d\n", __func__, llama_n_ctx(lctx));
+    //    LOG_INF("%s: setting penalty_last_n to ctx_size = %d\n", __func__, llama_n_ctx(lctx));
     //    params.sampling.penalty_last_n = llama_n_ctx(lctx);
     //}
 
     //if (params.sampling.dry_penalty_last_n == -1) {
-    //    LOG_TRC("%s: setting dry_penalty_last_n to ctx_size = %d\n", __func__, llama_n_ctx(lctx));
+    //    LOG_INF("%s: setting dry_penalty_last_n to ctx_size = %d\n", __func__, llama_n_ctx(lctx));
     //    params.sampling.dry_penalty_last_n = llama_n_ctx(lctx);
     //}
 
@@ -1258,25 +1257,21 @@ common_init_result::common_init_result(common_params & params) :
         cparams.n_samplers = pimpl->samplers_seq_config.size();
     }
 
-    // [TAG_RS_STATE_ROLLBACK_SUPPORT]
-    // TODO: ngram speculative methods require checkpointing in addition to partial RS rollback
-    //       currently this is not supported. so we disable the partial rollback
     if (cparams.n_rs_seq > 0 && (llama_model_is_recurrent(model) || llama_model_is_hybrid(model))) {
         auto & types = params.speculative.types;
 
-        for (int i = 0; i < (int) types.size(); i++) {
+        for (int i = 0; i < (int) types.size(); ++i) {
             if (types[i] == COMMON_SPECULATIVE_TYPE_NONE) {
                 continue;
             }
-            if (types[i] == COMMON_SPECULATIVE_TYPE_DRAFT_MTP) {
+            if (types[i] == COMMON_SPECULATIVE_TYPE_MTP) {
                 continue;
             }
 
             cparams.n_rs_seq = 0;
 
-            LOG_WRN("%s: recurrent state rollback is not compatible with '%s' - disabling rollback support\n", __func__,
-                    common_speculative_type_to_str(types[i]).c_str());
-
+            LOG_WRN("%s: recurrent state rollback is not compatible with speculative type %d - disabling rollback support\n",
+                    __func__, (int) types[i]);
             break;
         }
     }
@@ -1477,7 +1472,7 @@ common_context_seq_rm_type common_context_can_seq_rm(llama_context * ctx) {
 
     // try to remove the last tokens
     if (!llama_memory_seq_rm(mem, 0, 1, -1)) {
-        LOG_TRC("%s: the context does not support partial sequence removal\n", __func__);
+        LOG_WRN("%s: the target context does not support partial sequence removal\n", __func__);
         res = COMMON_CONTEXT_SEQ_RM_TYPE_FULL;
         goto done;
     }
@@ -1487,23 +1482,6 @@ done:
     llama_synchronize(ctx);
 
     return res;
-}
-
-void common_context_seq_rm(llama_context * ctx, llama_seq_id seq_id, llama_pos p0, llama_pos p1) {
-    auto * mem = llama_get_memory(ctx);
-    if (!llama_memory_seq_rm(mem, seq_id, p0, p1)) {
-        GGML_ABORT("%s", string_format("failed to remove sequence %d with p0=%d, p1=%d\n", seq_id, p0, p1).c_str());
-    }
-}
-
-void common_context_seq_cp(llama_context * ctx, llama_seq_id seq_id_src, llama_seq_id seq_id_dst, llama_pos p0, llama_pos p1) {
-    auto * mem = llama_get_memory(ctx);
-    llama_memory_seq_cp(mem, seq_id_src, seq_id_dst, p0, p1);
-}
-
-void common_context_seq_add(llama_context * ctx, llama_seq_id seq_id, llama_pos p0, llama_pos p1, llama_pos delta) {
-    auto * mem = llama_get_memory(ctx);
-    llama_memory_seq_add(mem, seq_id, p0, p1, delta);
 }
 
 void common_set_adapter_lora(struct llama_context * ctx, std::vector<common_adapter_lora_info> & lora) {
@@ -1536,6 +1514,40 @@ struct llama_model_params common_model_params_to_llama(common_params & params) {
     mparams.use_extra_bufts = !params.no_extra_bufts;
     mparams.no_host         = params.no_host;
 
+    if (params.speculative.types.size() == 1 && params.speculative.types[0] == COMMON_SPECULATIVE_TYPE_NONE) {
+        LOG_INF("%s: speculative=none, enabling plain-trunk mode for MTP-capable models\n", __func__);
+        std::unordered_map<std::string, llama_model_kv_override> kv_map;
+        for (const auto & ov : params.kv_overrides) {
+            if (ov.key[0] == 0) {
+                break;
+            }
+            kv_map[ov.key] = ov;
+        }
+
+        llama_model_kv_override ov = {};
+        auto it = kv_map.find("llama.nomtp_trunk_only");
+        if (it != kv_map.end()) {
+            ov = it->second;
+        }
+        std::snprintf(ov.key, sizeof(ov.key), "%s", "llama.nomtp_trunk_only");
+        ov.tag = LLAMA_KV_OVERRIDE_TYPE_BOOL;
+        ov.val_bool = true;
+        kv_map["llama.nomtp_trunk_only"] = ov;
+
+        params.kv_overrides.clear();
+        params.kv_overrides.reserve(kv_map.size() + 1);
+        for (const auto & [_, kv] : kv_map) {
+            params.kv_overrides.push_back(kv);
+        }
+        params.kv_overrides.push_back({});
+        params.kv_overrides.back().key[0] = 0;
+    }
+
+    if (!params.kv_overrides.empty() && params.kv_overrides.back().key[0] != 0) {
+        params.kv_overrides.emplace_back();
+        params.kv_overrides.back().key[0] = 0;
+    }
+
     if (params.kv_overrides.empty()) {
         mparams.kv_overrides = NULL;
     } else {
@@ -1563,6 +1575,9 @@ struct llama_context_params common_context_params_to_llama(const common_params &
     cparams.n_ctx             = params.n_ctx;
     cparams.n_seq_max         = params.n_parallel;
     cparams.n_rs_seq          = params.speculative.need_n_rs_seq();
+    if (getenv("LLAMA_DISABLE_MTP_RS_SEQ")) {
+        cparams.n_rs_seq = 0;
+    }
     cparams.n_batch           = params.n_batch;
     cparams.n_ubatch          = params.n_ubatch;
     cparams.n_threads         = params.cpuparams.n_threads;
@@ -2131,12 +2146,4 @@ void common_prompt_checkpoint::load_dft(
     if (n != data_dft.size()) {
         GGML_ABORT("checkpoint size mismatch: expected %zu, got %zu\n", data_dft.size(), n);
     }
-}
-
-void common_prompt_checkpoint::clear_tgt() {
-    data_tgt.clear();
-}
-
-void common_prompt_checkpoint::clear_dft() {
-    data_dft.clear();
 }

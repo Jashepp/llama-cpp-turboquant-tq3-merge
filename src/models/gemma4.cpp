@@ -116,7 +116,6 @@ void llama_model_gemma4::load_arch_tensors(llama_model_loader &) {
                 layer.ffn_gate_exps = create_tensor(tn(LLM_TENSOR_FFN_GATE_EXPS, "weight", i), {n_embd, n_ff_exp, n_expert}, 0);
                 layer.ffn_up_exps   = create_tensor(tn(LLM_TENSOR_FFN_UP_EXPS,   "weight", i), {n_embd, n_ff_exp, n_expert}, 0);
             }
-
             layer.ffn_down_exps     = create_tensor(tn(LLM_TENSOR_FFN_DOWN_EXPS,     "weight", i), {n_ff_exp, n_embd, n_expert}, 0);
 
             // per-expert scale will be loaded as down_exps_s at the end of the current switch case
@@ -371,6 +370,9 @@ llama_model_gemma4::graph::graph(const llama_model & model, const llm_graph_para
         inpL = cur;
     }
     cur = inpL;
+
+    cb(cur, "h_pre_norm", -1);
+    res->t_h_pre_norm = cur;
 
     cur = build_norm(cur,
             model.output_norm, nullptr,
