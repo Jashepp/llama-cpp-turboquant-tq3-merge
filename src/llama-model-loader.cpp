@@ -4,6 +4,7 @@
 #include "ggml.h"
 #include "gguf.h"
 #include "llama-hparams.h"
+#include "../common/log.h"
 
 #include <algorithm>
 #include <array>
@@ -811,12 +812,13 @@ llama_model_loader::llama_model_loader(
         }
 
         // print type counts
+        using namespace std::string_literals;
         for (auto & kv : n_type) {
             if (kv.second == 0) {
                 continue;
             }
 
-            LLAMA_LOG_INFO("%s: - type %4s: %4d tensors\n", __func__, ggml_type_name(kv.first), kv.second);
+            LLAMA_LOG_INFO("%s: - type "s+LOG_COL_GREEN+"%4s"s+LOG_COL_DEFAULT+": "s+LOG_COL_BLUE+"%4d"s+LOG_COL_DEFAULT+" tensors\n"s, __func__, ggml_type_name(kv.first), kv.second);
         }
     }
 
@@ -1737,11 +1739,12 @@ std::string llama_model_loader::ftype_name() const {
 }
 
 void llama_model_loader::print_info() const {
-    LLAMA_LOG_INFO("%s: file format = %s\n", __func__, llama_file_version_name(fver));
-    LLAMA_LOG_INFO("%s: file type   = %s\n", __func__, llama_model_ftype_name(ftype).c_str());
+    using namespace std::string_literals;
+    LLAMA_LOG_INFO("%s: file format = "s+LOG_COL_GREEN+"%s"s+LOG_COL_DEFAULT+"\n"s, __func__, llama_file_version_name(fver));
+    LLAMA_LOG_INFO("%s: file type   = "s+LOG_COL_GREEN+"%s"s+LOG_COL_DEFAULT+"\n"s, __func__, llama_model_ftype_name(ftype).c_str());
     if (n_bytes < GiB) {
-        LLAMA_LOG_INFO("%s: file size   = %.2f MiB (%.2f BPW) \n", __func__, n_bytes/1024.0/1024.0,        n_bytes*8.0/n_elements);
+        LLAMA_LOG_INFO("%s: file size   = "s+LOG_COL_BLUE+"%.2f"s+LOG_COL_DEFAULT+" MiB ("s+LOG_COL_BLUE+"%.2f"s+LOG_COL_DEFAULT+" BPW) \n"s, __func__, n_bytes/1024.0/1024.0,        n_bytes*8.0/n_elements);
     } else {
-        LLAMA_LOG_INFO("%s: file size   = %.2f GiB (%.2f BPW) \n", __func__, n_bytes/1024.0/1024.0/1024.0, n_bytes*8.0/n_elements);
+        LLAMA_LOG_INFO("%s: file size   = "s+LOG_COL_BLUE+"%.2f"s+LOG_COL_DEFAULT+" GiB ("s+LOG_COL_BLUE+"%.2f"s+LOG_COL_DEFAULT+" BPW) \n"s, __func__, n_bytes/1024.0/1024.0/1024.0, n_bytes*8.0/n_elements);
     }
 }

@@ -1,5 +1,6 @@
 #include "server-common.h"
 #include "server-models.h"
+#include "../../common/log.h"
 
 #include "build-info.h"
 #include "preset.h"
@@ -48,6 +49,8 @@ extern char **environ;
 // address for child process, this is needed because router may run on 0.0.0.0
 // ref: https://github.com/ggml-org/llama.cpp/issues/17862
 #define CHILD_ADDR "127.0.0.1"
+
+using namespace std::string_literals;
 
 static std::filesystem::path get_server_exec_path() {
 #if defined(_WIN32)
@@ -518,7 +521,7 @@ void server_models::unload_lru() {
         }
     }
     if (!lru_model_name.empty() && count_active >= (size_t)base_params.models_max) {
-        SRV_INF("models_max limit reached, removing LRU name=%s\n", lru_model_name.c_str());
+        SRV_INF("models_max limit reached, removing LRU name = "s+LOG_COL_GREEN+"%s"s+LOG_COL_DEFAULT+"\n"s, lru_model_name.c_str());
         unload(lru_model_name);
         // wait for unload to complete
         {
@@ -532,7 +535,7 @@ void server_models::unload_lru() {
 
 void server_models::load(const std::string & name) {
     if (!has_model(name)) {
-        throw std::runtime_error("model name=" + name + " is not found");
+        throw std::runtime_error("model name = " + name + " is not found");
     }
     unload_lru();
 
@@ -573,7 +576,7 @@ void server_models::load(const std::string & name) {
 
     inst.subproc = std::make_shared<subprocess_s>();
     {
-        SRV_INF("spawning server instance with name=%s on port %d\n", inst.meta.name.c_str(), inst.meta.port);
+        SRV_INF("spawning server instance with name = %s on port %d\n", inst.meta.name.c_str(), inst.meta.port);
 
         inst.meta.update_args(ctx_preset, bin_path); // render args
 
@@ -623,7 +626,7 @@ void server_models::load(const std::string & name) {
                     }
                 }
             } else {
-                SRV_ERR("failed to get stdout/stderr of child process for name=%s\n", name.c_str());
+                SRV_ERR("failed to get stdout/stderr of child process for name = "s+LOG_COL_GREEN+"%s"s+LOG_COL_DEFAULT+"\n"s, name.c_str());
             }
         });
 
@@ -643,7 +646,7 @@ void server_models::load(const std::string & name) {
             if (!subprocess_alive(child_proc.get())) {
                 return;
             }
-            SRV_INF("stopping model instance name=%s\n", name.c_str());
+            SRV_INF("stopping model instance name = "s+LOG_COL_GREEN+"%s"s+LOG_COL_DEFAULT+"\n"s, name.c_str());
             // send interrupt to child process
             fprintf(stdin_file, "%s\n", CMD_ROUTER_TO_CHILD_EXIT);
             fflush(stdin_file);
@@ -657,7 +660,7 @@ void server_models::load(const std::string & name) {
                 int64_t elapsed = ggml_time_ms() - start_time;
                 if (elapsed >= stop_timeout * 1000) {
                     // timeout, force kill
-                    SRV_WRN("force-killing model instance name=%s after %d seconds timeout\n", name.c_str(), stop_timeout);
+                    SRV_WRN("force-killing model instance name = "s+LOG_COL_GREEN+"%s"s+LOG_COL_DEFAULT+" after %s seconds timeout\n"s, name.c_str(), std::to_string(stop_timeout).c_str());
                     subprocess_terminate(child_proc.get());
                     return;
                 }
@@ -688,7 +691,7 @@ void server_models::load(const std::string & name) {
 
         // update status and exit code
         this->update_status(name, SERVER_MODEL_STATUS_UNLOADED, exit_code);
-        SRV_INF("instance name=%s exited with status %d\n", name.c_str(), exit_code);
+        SRV_INF("instance name = "s+LOG_COL_GREEN+"%s"s+LOG_COL_DEFAULT+" exited with status %d\n"s, name.c_str(), std::to_string(exit_code));
     });
 
     // clean up old process/thread if exists
@@ -696,7 +699,7 @@ void server_models::load(const std::string & name) {
         auto & old_instance = mapping[name];
         // old process should have exited already, but just in case, we clean it up here
         if (subprocess_alive(old_instance.subproc.get())) {
-            SRV_WRN("old process for model name=%s is still alive, this is unexpected\n", name.c_str());
+            SRV_WRN("old process for model name = "s+LOG_COL_GREEN+"%s"s+LOG_COL_DEFAULT+" is still alive, this is unexpected\n"s, name.c_str());
             subprocess_terminate(old_instance.subproc.get()); // force kill
         }
         if (old_instance.th.joinable()) {
@@ -713,17 +716,17 @@ void server_models::unload(const std::string & name) {
     auto it = mapping.find(name);
     if (it != mapping.end()) {
         if (it->second.meta.is_running()) {
-            SRV_INF("stopping model instance name=%s\n", name.c_str());
+            SRV_INF("stopping model instance name = "s+LOG_COL_GREEN+"%s"s+LOG_COL_DEFAULT+"\n"s, name.c_str());
             stopping_models.insert(name);
             if (it->second.meta.status == SERVER_MODEL_STATUS_LOADING) {
                 // special case: if model is in loading state, unloading means force-killing it
-                SRV_WRN("model name=%s is still loading, force-killing\n", name.c_str());
+                SRV_WRN("model name = "s+LOG_COL_GREEN+"%s"s+LOG_COL_DEFAULT+" is still loading, force-killing\n"s, name.c_str());
                 subprocess_terminate(it->second.subproc.get());
             }
             cv_stop.notify_all();
             // status change will be handled by the managing thread
         } else {
-            SRV_WRN("model instance name=%s is not running\n", name.c_str());
+            SRV_WRN("model instance name = "s+LOG_COL_GREEN+"%s"s+LOG_COL_DEFAULT+" is not running\n"s, name.c_str());
         }
     }
 }
@@ -734,7 +737,7 @@ void server_models::unload_all() {
         std::lock_guard<std::mutex> lk(mutex);
         for (auto & [name, inst] : mapping) {
             if (inst.meta.is_running()) {
-                SRV_INF("stopping model instance name=%s\n", name.c_str());
+                SRV_INF("stopping model instance name = "s+LOG_COL_GREEN+"%s"s+LOG_COL_DEFAULT+"\n"s, name.c_str());
                 stopping_models.insert(name);
                 cv_stop.notify_all();
                 // status change will be handled by the managing thread
@@ -784,12 +787,12 @@ bool server_models::ensure_model_ready(const std::string & name) {
         return false; // child is sleeping but still running; new request will wake it up
     }
     if (meta->status == SERVER_MODEL_STATUS_UNLOADED) {
-        SRV_INF("model name=%s is not loaded, loading...\n", name.c_str());
+        SRV_INF("model name = "s+LOG_COL_GREEN+"%s"s+LOG_COL_DEFAULT+" is not loaded, loading...\n"s, name.c_str());
         load(name);
     }
 
     // wait for loading to complete
-    SRV_INF("waiting until model name=%s is fully loaded...\n", name.c_str());
+    SRV_INF("waiting until model name = "s+LOG_COL_GREEN+"%s"s+LOG_COL_DEFAULT+" is fully loaded...\n"s, name.c_str());
     wait_until_loading_finished(name);
 
     // check final status
@@ -813,7 +816,7 @@ server_http_res_ptr server_models::proxy_request(const server_http_req & req, co
         std::unique_lock<std::mutex> lk(mutex);
         mapping[name].meta.last_used = ggml_time_ms();
     }
-    SRV_INF("proxying request to model %s on port %d\n", name.c_str(), meta->port);
+    SRV_INF("proxying request to model "s+LOG_COL_GREEN+"%s"s+LOG_COL_DEFAULT+" on port %s\n"s, name.c_str(), std::to_string(meta->port).c_str());
     std::string proxy_path = req.path;
     if (!req.query_string.empty()) {
         proxy_path += '?' + req.query_string;

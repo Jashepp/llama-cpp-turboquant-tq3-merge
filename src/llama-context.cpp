@@ -10,6 +10,7 @@
 #include "llama-model.h"
 #include "llama-ext.h"
 #include "llama.h"
+#include "../common/log.h"
 
 #include <cinttypes>
 #include <cmath>
@@ -285,8 +286,8 @@ llama_context::llama_context(
             if (output_reserve(params.n_seq_max) < params.n_seq_max) {
                 throw std::runtime_error("failed to reserve initial output buffer");
             }
-
-            LLAMA_LOG_INFO("%s: %10s  output buffer size = %8.2f MiB\n", __func__,
+            using namespace std::string_literals;
+            LLAMA_LOG_INFO("%s: "s+LOG_COL_GREEN+"%10s"s+LOG_COL_DEFAULT+"  output buffer size = "s+LOG_COL_BLUE+"%8.2f"s+LOG_COL_DEFAULT+" MiB\n"s, __func__,
                     ggml_backend_buffer_name    (buf_output.get()),
                     ggml_backend_buffer_get_size(buf_output.get()) / 1024.0 / 1024.0);
         }
@@ -630,7 +631,8 @@ void llama_context::sched_reserve() {
             backend_buf_exp_size[i] = ggml_backend_sched_get_buffer_size(sched.get(), backend);
         }
         if (backend_buf_exp_size[i] > 1) {
-            LLAMA_LOG_INFO("%s: %10s compute buffer size = %8.2f MiB\n", __func__,
+            using namespace std::string_literals;
+            LLAMA_LOG_INFO(("%s: %10s compute buffer size = "s+LOG_COL_BLUE+"%8.2f"s+LOG_COL_DEFAULT+" MiB\n"s).c_str(), __func__,
                     ggml_backend_buft_name(buft),
                     backend_buf_exp_size[i] / 1024.0 / 1024.0);
         }

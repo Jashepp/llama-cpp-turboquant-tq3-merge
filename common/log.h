@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ggml.h" // for ggml_log_level
+#include <string>
 
 #define LOG_CLR_TO_EOL  "\033[K\r"
 #define LOG_COL_DEFAULT "\033[0m"
@@ -61,6 +62,7 @@ void                common_log_free  (struct common_log * log);
 
 LOG_ATTRIBUTE_FORMAT(3, 4)
 void common_log_add(struct common_log * log, enum ggml_log_level level, const char * fmt, ...);
+void common_log_add(struct common_log * log, enum ggml_log_level level, const std::string & fmt, ...);
 
 // defaults: file = NULL, colors = false, prefix = false, timestamps = false
 //

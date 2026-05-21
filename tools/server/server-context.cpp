@@ -9,7 +9,7 @@
 #include "build-info.h"
 #include "common.h"
 #include "llama.h"
-#include "log.h"
+#include "../../common/log.h"
 #include "sampling.h"
 #include "speculative.h"
 #include "mtmd.h"
@@ -50,6 +50,8 @@ enum server_state {
     SERVER_STATE_LOADING_MODEL,  // Server is starting up, model not fully loaded yet
     SERVER_STATE_READY,          // Server is ready and model is loaded
 };
+
+using namespace std::string_literals;
 
 struct server_slot {
     int id;
@@ -120,7 +122,7 @@ struct server_slot {
 
         const size_t cur_size = cur_size_tgt + cur_size_dft;
 
-        SRV_WRN(" - saving prompt with length %d, total state size = %.3f MiB (draft: %.3f MiB)\n",
+        SRV_WRN(" - saving prompt with length "s+LOG_COL_BLUE+"%d"s+LOG_COL_YELLOW+", total state size = "s+LOG_COL_BLUE+"%.3f"s+LOG_COL_YELLOW+" MiB (draft: "s+LOG_COL_BLUE+"%.3f"s+LOG_COL_YELLOW+" MiB)\n"s,
                 (int) prompt.tokens.size(), cur_size / (1024.0 * 1024.0), cur_size_dft / (1024.0 * 1024.0));
 
         auto * cur = prompt_cache.alloc(prompt, cur_size_tgt, cur_size_dft);
@@ -171,6 +173,7 @@ struct server_slot {
     // stats
     size_t n_sent_text = 0; // number of sent text character
 
+    int64_t t_print_last = 0;
     int64_t t_start_process_prompt;
     int64_t t_start_generation;
 
@@ -238,7 +241,7 @@ struct server_slot {
             }
         }
 
-        SLT_INF(*this, "init sampler, took %0.2f ms, tokens: text = %d, total = %d\n",
+        SLT_TRC(*this, "init sampler, took "s+LOG_COL_BLUE+"%0.2f"s+LOG_COL_DEFAULT+" ms, tokens: text = "s+LOG_COL_BLUE+"%d"s+LOG_COL_DEFAULT+", total = "s+LOG_COL_BLUE+"%d"s+LOG_COL_DEFAULT+"\n"s,
                 (ggml_time_us() - t_start) / 1000.0, n_text, (int) prompt.tokens.size());
     }
 
@@ -326,7 +329,7 @@ struct server_slot {
             n_draft_max = std::min(n_draft_max, n_remaining - 1);
         }
 
-        SLT_DBG(*this, "max possible draft: %d\n", n_draft_max);
+        SLT_DBG(*this, "max possible draft: "s+LOG_COL_BLUE+"%d"s+LOG_COL_MAGENTA+"\n"s, n_draft_max);
 
         return n_draft_max;
     }
@@ -338,10 +341,10 @@ struct server_slot {
 
             common_batch_add(batch, sampled, prompt.tokens.pos_next(), { this->id }, true);
 
-            SLT_DBG(*this, "slot decode token, id=%d, n_ctx = %d, n_tokens = %d, truncated = %d\n",
+            SLT_DBG(*this, "slot decode token, id="s+LOG_COL_BLUE+"%d"s+LOG_COL_MAGENTA+", n_ctx = "s+LOG_COL_BLUE+"%d"s+LOG_COL_MAGENTA+", n_tokens = "s+LOG_COL_BLUE+"%d"s+LOG_COL_MAGENTA+", truncated = "s+LOG_COL_BLUE+"%d"s+LOG_COL_MAGENTA+"\n"s,
                     sampled, n_ctx, prompt.n_tokens(), truncated);
         } else {
-            SLT_DBG(*this, "generate_draft: id=%d, #tokens=%zu, #draft=%zu, pos_next=%d\n",
+            SLT_DBG(*this, "generate_draft: id="s+LOG_COL_BLUE+"%d"s+LOG_COL_MAGENTA+", #tokens="s+LOG_COL_BLUE+"%zu"s+LOG_COL_MAGENTA+", #draft="s+LOG_COL_BLUE+"%zu"s+LOG_COL_MAGENTA+", pos_next="s+LOG_COL_BLUE+"%d"s+LOG_COL_MAGENTA+"\n"s,
                     sampled, prompt.tokens.size(), spec_draft.size(), prompt.tokens.pos_next());
 
             GGML_ASSERT(spec_i_batch.empty());
@@ -367,7 +370,7 @@ struct server_slot {
         if (is_processing()) {
             GGML_ASSERT(task);
 
-            SLT_INF(*this, "stop processing: n_tokens = %d, truncated = %d\n", prompt.n_tokens(), truncated);
+            SLT_INF(*this, LOG_COL_GREEN+"stop processing"s+LOG_COL_DEFAULT+": n_tokens = "s+LOG_COL_BLUE+"%d"s+LOG_COL_DEFAULT+", truncated = "s+LOG_COL_BLUE+"%d"s+LOG_COL_DEFAULT+"\n"s, prompt.n_tokens(), truncated);
 
             t_last_used        =  ggml_time_us();
             t_token_generation = (ggml_time_us() - t_start_generation) / 1e3;
@@ -439,6 +442,36 @@ struct server_slot {
         return stop_pos;
     }
 
+    void print_timings_tg() {
+        if (n_decoded < 100) {
+            return;
+        }
+
+        const int64_t t_now = ggml_time_us();
+
+        if (t_now - t_print_last < 3*1000*1000) {
+            return;
+        }
+
+        t_print_last = t_now;
+
+        const double n_gen_second = 1e3 / t_token_generation * n_decoded;
+
+        SLT_INF(*this, "n_decoded = "s+LOG_COL_BLUE+"%6d"s+LOG_COL_DEFAULT+", tg = "s+LOG_COL_BLUE+"%6.2f"s+LOG_COL_DEFAULT+" t/s\n", n_decoded, n_gen_second);
+    }
+
+    void print_timings_pp() const {
+        const double n_prompt_second = 1e3 / t_prompt_processing * n_prompt_tokens_processed;
+        const double f_progress = (float) prompt.n_tokens() / task->n_tokens();
+
+        if (t_prompt_processing < 3000.0) {
+            return;
+        }
+
+        SLT_INF(*this, "prompt processing, n_tokens = "s+LOG_COL_BLUE+"%6d"s+LOG_COL_DEFAULT+", progress = "s+LOG_COL_BLUE+"%.2f"s+LOG_COL_DEFAULT+", time = "s+LOG_COL_BLUE+"%6.2f"s+LOG_COL_DEFAULT+" s, "s+LOG_COL_BLUE+"%.2f"s+LOG_COL_DEFAULT+" t/s\n"s,
+                n_prompt_tokens_processed, f_progress, t_prompt_processing / 1e3, n_prompt_second);
+    }
+
     void print_timings() const {
         const double t_prompt        =       t_prompt_processing / n_prompt_tokens_processed;
         const double n_prompt_second = 1e3 / t_prompt_processing * n_prompt_tokens_processed;
@@ -448,9 +481,9 @@ struct server_slot {
 
         SLT_INF(*this,
                 "\n"
-                "prompt eval time = %10.2f ms / %5d tokens (%8.2f ms per token, %8.2f tokens per second)\n"
-                "       eval time = %10.2f ms / %5d tokens (%8.2f ms per token, %8.2f tokens per second)\n"
-                "      total time = %10.2f ms / %5d tokens\n",
+                "prompt eval time = "s+LOG_COL_BLUE+"%10.2f"s+LOG_COL_DEFAULT+" ms / "s+LOG_COL_BLUE+"%5d"s+LOG_COL_DEFAULT+" tokens ("s+LOG_COL_BLUE+"%8.2f"s+LOG_COL_DEFAULT+" ms per token, "s+LOG_COL_BLUE+"%8.2f"s+LOG_COL_DEFAULT+" tokens per second)\n"
+                "       eval time = "s+LOG_COL_BLUE+"%10.2f"s+LOG_COL_DEFAULT+" ms / "s+LOG_COL_BLUE+"%5d"s+LOG_COL_DEFAULT+" tokens ("s+LOG_COL_BLUE+"%8.2f"s+LOG_COL_DEFAULT+" ms per token, "s+LOG_COL_BLUE+"%8.2f"s+LOG_COL_DEFAULT+" tokens per second)\n"
+                "      total time = "s+LOG_COL_BLUE+"%10.2f"s+LOG_COL_DEFAULT+" ms / "s+LOG_COL_BLUE+"%5d"s+LOG_COL_DEFAULT+" tokens\n"s,
                 t_prompt_processing, n_prompt_tokens_processed, t_prompt, n_prompt_second,
                 t_token_generation, n_decoded, t_gen, n_gen_second,
                 t_prompt_processing + t_token_generation, n_prompt_tokens_processed + n_decoded);
@@ -887,13 +920,13 @@ private:
         }
 
         // setup slots
-        SRV_INF("initializing slots, n_slots = %d\n", params_base.n_parallel);
+        SRV_INF("initializing slots, n_slots = "s+LOG_COL_BLUE+"%d"s+LOG_COL_DEFAULT+"\n"s, params_base.n_parallel);
 
         const int n_ctx_train = llama_model_n_ctx_train(model_tgt);
 
         int n_ctx_slot = llama_n_ctx_seq(ctx_tgt);
         if (n_ctx_slot > n_ctx_train) {
-            SRV_WRN("the slot context (%d) exceeds the training context of the model (%d) - using rope scaling to extend\n", n_ctx_slot, n_ctx_train);
+            SRV_WRN("the slot context ("s+LOG_COL_BLUE+"%d"s+LOG_COL_YELLOW+") exceeds the training context of the model ("s+LOG_COL_BLUE+"%d"s+LOG_COL_YELLOW+") - using rope scaling to extend\n"s, n_ctx_slot, n_ctx_train);
             // Do not cap: caller has configured rope scaling (--rope-scale / --rope-scaling yarn) to handle extended context.
         }
 
@@ -943,7 +976,7 @@ private:
             slot.mctx                   = mctx;
             slot.prompt.tokens.has_mtmd = mctx != nullptr;
 
-            SLT_INF(slot, "new slot, n_ctx = %d\n", slot.n_ctx);
+            SLT_INF(slot, "new slot, n_ctx = "s+LOG_COL_BLUE+"%d"s+LOG_COL_DEFAULT+"\n"s, slot.n_ctx);
 
             slot.callback_on_release = [this](int id_slot) {
                 queue_tasks.pop_deferred_task(id_slot);
@@ -957,7 +990,7 @@ private:
             trace = LLAMA_TRACE ? atoi(LLAMA_TRACE) : 0;
 
             if (trace) {
-                SRV_WRN("LLAMA_TRACE = %d\n", trace);
+                SRV_WRN("LLAMA_TRACE = "s+LOG_COL_BLUE+"%d"s+LOG_COL_YELLOW+"\n"s, trace);
             }
         }
 
@@ -966,7 +999,7 @@ private:
             slots_debug = LLAMA_SERVER_SLOTS_DEBUG ? atoi(LLAMA_SERVER_SLOTS_DEBUG) : 0;
 
             if (slots_debug) {
-                SRV_WRN("LLAMA_SERVER_SLOTS_DEBUG = %d\n", slots_debug);
+                SRV_WRN("LLAMA_SERVER_SLOTS_DEBUG = "s+LOG_COL_BLUE+"%d"s+LOG_COL_YELLOW+"\n"s, slots_debug);
             }
         }
 
@@ -979,9 +1012,9 @@ private:
 
         if (params_base.cache_ram_mib != 0) {
             if (params_base.cache_ram_mib < 0) {
-                SRV_WRN("prompt cache is enabled, size limit: %s\n", "no limit");
+                SRV_INF("prompt cache is enabled, size limit: "s+LOG_COL_GREEN+"%s"s+LOG_COL_DEFAULT+"\n"s, "no limit"s);
             } else {
-                SRV_WRN("prompt cache is enabled, size limit: %d MiB\n", params_base.cache_ram_mib);
+                SRV_INF("prompt cache is enabled, size limit: "s+LOG_COL_BLUE+"%d"s+LOG_COL_DEFAULT+" MiB\n"s, params_base.cache_ram_mib);
             }
             SRV_WRN("%s", "use `--cache-ram 0` to disable the prompt cache\n");
 
@@ -1082,7 +1115,7 @@ private:
             // 2. The chat template supports it
             const bool template_supports_thinking = params_base.use_jinja && common_chat_templates_support_enable_thinking(chat_templates.get());
             const bool enable_thinking = params_base.enable_reasoning != 0 && template_supports_thinking;
-            SRV_INF("%s: chat template, thinking = %d\n", __func__, enable_thinking);
+            SRV_INF("%s: chat template, thinking = "s+LOG_COL_BLUE+"%d"s+LOG_COL_DEFAULT+"\n"s, __func__, enable_thinking);
 
             chat_params = {
                 /* use_jinja             */ params_base.use_jinja,
@@ -1235,7 +1268,7 @@ private:
             }
 
             if (slot.prompt.n_tokens() > 0) {
-                SRV_WRN("purging slot %d with %zu tokens\n", slot.id, slot.prompt.tokens.size());
+                SRV_WRN("purging slot "s+LOG_COL_BLUE+"%d"s+LOG_COL_YELLOW+" with "s+LOG_COL_BLUE+"%zu"s+LOG_COL_YELLOW+" tokens\n"s, slot.id, slot.prompt.tokens.size());
 
                 slot.prompt_clear(false);
 
@@ -1378,7 +1411,7 @@ private:
         // reset server kill-switch counter
         n_empty_consecutive = 0;
 
-        SLT_INF(slot, "processing task, is_child = %d\n", slot.task->is_child());
+        SLT_INF(slot, LOG_COL_GREEN+"processing task"s+LOG_COL_DEFAULT+", is_child = "s+LOG_COL_BLUE+"%d"s+LOG_COL_DEFAULT+"\n"s, slot.task->is_child());
         return true;
     }
 
@@ -1440,7 +1473,7 @@ private:
             slot.stop           = STOP_TYPE_LIMIT;
             slot.has_next_token = false;
 
-            SLT_DBG(slot, "stopped due to running out of context capacity, prompt.n_tokens() = %d, task.n_tokens = %d, n_decoded = %d, n_ctx = %d\n",
+            SLT_DBG(slot, "stopped due to running out of context capacity, prompt.n_tokens() = "s+LOG_COL_BLUE+"%d"s+LOG_COL_MAGENTA+", task.n_tokens = "s+LOG_COL_BLUE+"%d"s+LOG_COL_MAGENTA+", n_decoded = "s+LOG_COL_BLUE+"%d"s+LOG_COL_MAGENTA+", n_ctx = "s+LOG_COL_BLUE+"%d"s+LOG_COL_MAGENTA+"\n"s,
                     slot.prompt.n_tokens(), slot.task->n_tokens(), slot.n_decoded, slot.n_ctx);
         }
 
@@ -1449,7 +1482,7 @@ private:
             slot.stop           = STOP_TYPE_LIMIT;
             slot.has_next_token = false;
 
-            SLT_DBG(slot, "stopped by limit, n_decoded = %d, n_predict = %d\n", slot.n_decoded, slot.task->params.n_predict);
+            SLT_DBG(slot, "stopped by limit, n_decoded = "s+LOG_COL_BLUE+"%d"s+LOG_COL_MAGENTA+", n_predict = "s+LOG_COL_BLUE+"%d"s+LOG_COL_MAGENTA+"\n"s, slot.n_decoded, slot.task->params.n_predict);
         }
 
         if (slot.has_new_line) {
@@ -1473,7 +1506,7 @@ private:
                         // cut the last line
                         slot.generated_text.erase(pos, std::string::npos);
 
-                        SLT_DBG(slot, "stopped by indentation limit, n_decoded = %d, n_indent = %d\n", slot.n_decoded, n_indent);
+                        SLT_DBG(slot, "stopped by indentation limit, n_decoded = "s+LOG_COL_BLUE+"%d"s+LOG_COL_MAGENTA+", n_indent = "s+LOG_COL_BLUE+"%d"s+LOG_COL_MAGENTA+"\n"s, slot.n_decoded, n_indent);
                     }
                 }
 
@@ -1497,7 +1530,7 @@ private:
                 slot.stop           = STOP_TYPE_LIMIT;
                 slot.has_next_token = false;
 
-                SLT_DBG(slot, "stopped by time limit, n_decoded = %d, t_max_predict_ms = %d ms\n", slot.n_decoded, (int) slot.task->params.t_max_predict_ms);
+                SLT_DBG(slot, "stopped by time limit, n_decoded = "s+LOG_COL_BLUE+"%d"s+LOG_COL_MAGENTA+", t_max_predict_ms = "s+LOG_COL_BLUE+"%d"s+LOG_COL_MAGENTA+" ms\n"s, slot.n_decoded, (int) slot.task->params.t_max_predict_ms);
             }
         }
 
@@ -1508,7 +1541,7 @@ private:
             SLT_DBG(slot, "%s", "stopped by EOS\n");
         }
 
-        SLT_DBG(slot, "n_decoded = %d, n_remaining = %d, next token: %5d '%s'\n", slot.n_decoded, slot.n_remaining, result.tok, token_str.c_str());
+        SLT_DBG(slot, "n_decoded = "s+LOG_COL_BLUE+"%d"s+LOG_COL_MAGENTA+", n_remaining = "s+LOG_COL_BLUE+"%d"s+LOG_COL_MAGENTA+", next token: "s+LOG_COL_BLUE+"%5d"s+LOG_COL_MAGENTA+" '%s'\n"s, slot.n_decoded, slot.n_remaining, result.tok, token_str.c_str());
 
         return slot.has_next_token; // continue
     }
@@ -1580,7 +1613,7 @@ private:
     }
 
     void send_error(const int id_task, const std::string & error, const enum error_type type = ERROR_TYPE_SERVER, const int32_t n_prompt_tokens = 0, const int32_t n_ctx = 0) {
-        SRV_ERR("task id = %d, error: %s\n", id_task, error.c_str());
+        SRV_ERR("task id = "s+LOG_COL_BLUE+"%d"s+LOG_COL_RED+", error: %s\n"s, id_task, error.c_str());
 
         if (type == ERROR_TYPE_EXCEED_CONTEXT_SIZE) {
             GGML_ASSERT(n_ctx > 0 && n_prompt_tokens > 0);
@@ -1732,7 +1765,7 @@ private:
             }
 
             if (embd == nullptr) {
-                SLT_ERR(slot, "failed to get embeddings, token = %d, seq_id = %d\n", batch.token[i], batch.seq_id[i][0]);
+                SLT_ERR(slot, "failed to get embeddings, token = "s+LOG_COL_BLUE+"%d"s+LOG_COL_RED+", seq_id = "s+LOG_COL_BLUE+"%d"s+LOG_COL_RED+"\n"s, batch.token[i], batch.seq_id[i][0]);
 
                 res->embedding.push_back(std::vector<float>(n_embd_out, 0.0f));
                 continue;
@@ -1770,7 +1803,7 @@ private:
             }
 
             if (embd == NULL) {
-                SLT_ERR(slot, "failed to get embeddings, token = %d, seq_id = %d\n", batch.token[i], batch.seq_id[i][0]);
+                SLT_ERR(slot, "failed to get embeddings, token = "s+LOG_COL_BLUE+"%d"s+LOG_COL_RED+", seq_id = "s+LOG_COL_BLUE+"%d"s+LOG_COL_RED+"\n"s, batch.token[i], batch.seq_id[i][0]);
 
                 res->score = -1e6;
                 continue;
@@ -1827,7 +1860,7 @@ private:
 
         int id_parent = parent_task.id;
 
-        SRV_INF("launching slots for parent task id_task = %d with %zu child tasks\n", id_parent, parent_task.child_tasks.size());
+        SRV_INF("launching slots for parent task id_task = "s+LOG_COL_BLUE+"%d"s+LOG_COL_DEFAULT+" with "s+LOG_COL_BLUE+"%zu"s+LOG_COL_DEFAULT+" child tasks\n"s, id_parent, parent_task.child_tasks.size());
 
         // to be called in case of failure to release all launched slots
         auto release_slots = [this, id_parent]() {
@@ -1847,7 +1880,7 @@ private:
         for (auto * slot : child_slots) {
             int id_child = parent_task.child_tasks[idx].id;
             if (!launch_slot_with_task(*slot, std::move(parent_task.child_tasks[idx]))) {
-                SRV_ERR("failed to launch slot with child task, id_task = %d\n", id_child);
+                SRV_ERR("failed to launch slot with child task, id_task = "s+LOG_COL_BLUE+"%d"s+LOG_COL_RED+"\n"s, id_child);
                 release_slots();
                 return false;
             }
@@ -1856,7 +1889,7 @@ private:
 
         // finally, launch the parent task
         if (!launch_slot_with_task(parent_slot, std::move(parent_task))) {
-            SRV_ERR("failed to launch slot with task, id_task = %d\n", id_parent);
+            SRV_ERR("failed to launch slot with task, id_task = "s+LOG_COL_BLUE+"%d"s+LOG_COL_RED+"\n"s, id_parent);
             release_slots();
             return false;
         }
@@ -1870,7 +1903,7 @@ private:
             // make room for the new checkpoint, if needed
             const auto & cur = slot.prompt.checkpoints.front();
 
-            SLT_WRN(slot, "erasing old context checkpoint (pos_min = %d, pos_max = %d, n_tokens = %" PRId64 ", size = %.3f MiB)\n",
+            SLT_WRN(slot, "erasing old context checkpoint (pos_min = "s+LOG_COL_BLUE+"%d"s+LOG_COL_YELLOW+", pos_max = "s+LOG_COL_BLUE+"%d"s+LOG_COL_YELLOW+", n_tokens = "s+LOG_COL_BLUE+"%" PRId64 LOG_COL_YELLOW ", size = "s+LOG_COL_BLUE+"%.3f MiB"s+LOG_COL_YELLOW+")\n"s,
                     cur.pos_min, cur.pos_max, cur.n_tokens, (float) cur.size() / 1024 / 1024);
 
             slot.prompt.checkpoints.erase(slot.prompt.checkpoints.begin());
@@ -1883,8 +1916,8 @@ private:
         cur.update_tgt(ctx_tgt,       slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
         cur.update_dft(ctx_dft.get(), slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
 
-        SLT_WRN(slot,
-                "created context checkpoint %d of %d (pos_min = %d, pos_max = %d, n_tokens = %" PRId64 ", size = %.3f MiB)\n",
+        SLT_INF(slot,
+                "created checkpoint "s+LOG_COL_BLUE+"%d"s+LOG_COL_DEFAULT+" of "s+LOG_COL_BLUE+"%d"s+LOG_COL_DEFAULT+" (pos_min = "s+LOG_COL_BLUE+"%d"s+LOG_COL_DEFAULT+", pos_max = "s+LOG_COL_BLUE+"%d"s+LOG_COL_DEFAULT+", n_tokens = "s+LOG_COL_BLUE+"%" PRId64 LOG_COL_DEFAULT ", size = "s+LOG_COL_BLUE+"%.3f"s+LOG_COL_DEFAULT+" MiB)\n"s,
                 (int) slot.prompt.checkpoints.size(), params_base.n_ctx_checkpoints, cur.pos_min,
                 cur.pos_max, cur.n_tokens, (float) cur.size() / 1024 / 1024);
     }
@@ -1915,14 +1948,14 @@ private:
 
                     if (slot == nullptr) {
                         // if no slot is available, we defer this task for processing later
-                        SRV_DBG("no slot is available, defer task, id_task = %d\n", id_task);
+                        SRV_DBG("no slot is available, defer task, id_task =  "s+LOG_COL_BLUE+"%d"s+LOG_COL_MAGENTA+"\n"s, id_task);
                         queue_tasks.defer(std::move(task));
                         break;
                     }
 
                     if (slot->is_processing()) {
                         // if requested slot is unavailable, we defer this task for processing later
-                        SRV_DBG("requested slot is unavailable, defer task, id_task = %d\n", id_task);
+                        SRV_DBG("requested slot is unavailable, defer task, id_task =  "s+LOG_COL_BLUE+"%d"s+LOG_COL_MAGENTA+"\n"s, id_task);
                         queue_tasks.defer(std::move(task));
                         break;
                     }
@@ -1932,16 +1965,16 @@ private:
                         size_t n_child_tasks = task.child_tasks.size();
                         std::vector<server_slot *> child_slots = get_free_slots(n_child_tasks, slot->id);
                         if (child_slots.size() < n_child_tasks) {
-                            SRV_DBG("not enough free slots for child tasks, n_free = %zu, n_children = %zu, defer task, id_task = %d\n", child_slots.size(), n_child_tasks, id_task);
+                            SRV_DBG("not enough free slots for child tasks, n_free = "s+LOG_COL_BLUE+"%zu"s+LOG_COL_MAGENTA+", n_children = "s+LOG_COL_BLUE+"%zu"s+LOG_COL_MAGENTA+", defer task, id_task =  "s+LOG_COL_BLUE+"%d"s+LOG_COL_MAGENTA+"\n"s, child_slots.size(), n_child_tasks, id_task);
                             queue_tasks.defer(std::move(task));
                             break;
                         }
                         if (!launch_slots_with_parent_task(*slot, child_slots, std::move(task))) {
-                            SRV_ERR("failed to launch slot with parent task, id_task = %d\n", id_task);
+                            SRV_ERR("failed to launch slot with parent task, id_task = "s+LOG_COL_BLUE+"%d"s+LOG_COL_RED+"\n"s, id_task);
                             break; // drop the task
                         }
                     } else if (!launch_slot_with_task(*slot, std::move(task))) {
-                        SRV_ERR("failed to launch slot with task, id_task = %d\n", id_task);
+                        SRV_ERR("failed to launch slot with task, id_task = "s+LOG_COL_BLUE+"%d"s+LOG_COL_RED+"\n"s, id_task);
                         break; // drop the task
                     }
 
@@ -1985,7 +2018,7 @@ private:
 
                         slots_data.push_back(slot_data);
                     }
-                    SRV_DBG("n_idle_slots = %d, n_processing_slots = %d\n", n_idle_slots, n_processing_slots);
+                    SRV_DBG("n_idle_slots = "s+LOG_COL_BLUE+"%d"s+LOG_COL_MAGENTA+", n_processing_slots = "s+LOG_COL_BLUE+"%d"s+LOG_COL_MAGENTA+"\n"s, n_idle_slots, n_processing_slots);
 
                     auto res = std::make_unique<server_task_result_metrics>();
                     res->id                  = task.id;
@@ -2029,7 +2062,7 @@ private:
                     }
                     if (slot->is_processing()) {
                         // if requested slot is unavailable, we defer this task for processing later
-                        SRV_DBG("requested slot is unavailable, defer task, id_task = %d\n", task.id);
+                        SRV_DBG("requested slot is unavailable, defer task, id_task = "s+LOG_COL_BLUE+"%d"s+LOG_COL_MAGENTA+"\n"s, task.id);
                         queue_tasks.defer(std::move(task));
                         break;
                     }
@@ -2067,7 +2100,7 @@ private:
                     }
                     if (slot->is_processing()) {
                         // if requested slot is unavailable, we defer this task for processing later
-                        SRV_DBG("requested slot is unavailable, defer task, id_task = %d\n", task.id);
+                        SRV_DBG("requested slot is unavailable, defer task, id_task = "s+LOG_COL_BLUE+"%d"s+LOG_COL_MAGENTA+"\n"s, task.id);
                         queue_tasks.defer(std::move(task));
                         break;
                     }
@@ -2116,7 +2149,7 @@ private:
                     }
                     if (slot->is_processing()) {
                         // if requested slot is unavailable, we defer this task for processing later
-                        SRV_DBG("requested slot is unavailable, defer task, id_task = %d\n", task.id);
+                        SRV_DBG("requested slot is unavailable, defer task, id_task = "s+LOG_COL_BLUE+"%d"s+LOG_COL_MAGENTA+"\n"s, task.id);
                         queue_tasks.defer(std::move(task));
                         break;
                     }
@@ -2187,7 +2220,7 @@ private:
             }
 
             if (all_idle) {
-                SRV_INF("%s", "all slots are idle\n");
+                SRV_INF("%s", LOG_COL_GREEN+"all slots are idle"s+LOG_COL_DEFAULT+"\n"s);
 
                 return;
             }
@@ -2237,7 +2270,7 @@ private:
                 const int n_left    = slot.prompt.n_tokens() - n_keep;
                 const int n_discard = slot.task->params.n_discard ? slot.task->params.n_discard : (n_left / 2);
 
-                SLT_WRN(slot, "slot context shift, n_keep = %d, n_left = %d, n_discard = %d\n", n_keep, n_left, n_discard);
+                SLT_WRN(slot, "slot context shift, n_keep = "s+LOG_COL_BLUE+"%d"s+LOG_COL_YELLOW+", n_left = "s+LOG_COL_BLUE+"%d"s+LOG_COL_YELLOW+", n_discard = "s+LOG_COL_BLUE+"%d"s+LOG_COL_YELLOW+"\n"s, n_keep, n_left, n_discard);
 
                 llama_memory_seq_rm (llama_get_memory(ctx_tgt), slot.id, n_keep            , n_keep + n_discard);
                 llama_memory_seq_add(llama_get_memory(ctx_tgt), slot.id, n_keep + n_discard, slot.prompt.n_tokens(), -n_discard);
@@ -2368,7 +2401,7 @@ private:
                     //const int64_t t_total = ggml_time_us() - t_start;
                     //printf("checkpoint total: %f ms\n", t_total / 1000.0);
 
-                    SLT_DBG(slot, "created speculative checkpoint (pos_min = %d, pos_max = %d, n_tokens = %d, size = %.3f MiB, draft = %.3f MiB)\n",
+                    SLT_DBG(slot, "created speculative checkpoint (pos_min = "s+LOG_COL_BLUE+"%d"s+LOG_COL_MAGENTA+", pos_max = "s+LOG_COL_BLUE+"%d"s+LOG_COL_MAGENTA+", n_tokens = "s+LOG_COL_BLUE+"%d"s+LOG_COL_MAGENTA+", size = "s+LOG_COL_BLUE+"%.3f"s+LOG_COL_MAGENTA+" MiB, draft = "s+LOG_COL_BLUE+"%.3f"s+LOG_COL_MAGENTA+" MiB)\n"s,
                             ckpt.pos_min, ckpt.pos_max, slot.prompt.n_tokens(),
                             (float) ckpt.size() / 1024 / 1024,
                             (float) ckpt.data_dft.size() / 1024 / 1024);
@@ -2422,7 +2455,7 @@ private:
 
                         slot.state = SLOT_STATE_PROCESSING_PROMPT;
 
-                        SLT_INF(slot, "new prompt, n_ctx_slot = %d, n_keep = %d, task.n_tokens = %d\n",
+                        SLT_TRC(slot, LOG_COL_GREEN+"new prompt"s+LOG_COL_DEFAULT+", n_ctx_slot = "s+LOG_COL_BLUE+"%d"s+LOG_COL_DEFAULT+", n_keep = "s+LOG_COL_BLUE+"%d"s+LOG_COL_DEFAULT+", task.n_tokens = "s+LOG_COL_BLUE+"%d"s+LOG_COL_DEFAULT+"\n"s,
                                 slot.n_ctx, slot.task->params.n_keep, slot.task->n_tokens());
 
                         // print prompt tokens (for debugging)
@@ -2498,7 +2531,7 @@ private:
 
                                 // if there is an alora invoked, don't cache after the invocation start
                                 if (slot.alora_invocation_start > 0) {
-                                    SLT_DBG(slot, "only caching to alora invocation start (n_past = %d, alora_invocation_start = %d)\n", n_past, slot.alora_invocation_start);
+                                    SLT_DBG(slot, "only caching to alora invocation start (n_past = "s+LOG_COL_BLUE+"%d"s+LOG_COL_MAGENTA+", alora_invocation_start = "s+LOG_COL_BLUE+"%d"s+LOG_COL_MAGENTA+")\n"s, n_past, slot.alora_invocation_start);
                                     n_past = std::min(n_past, slot.alora_invocation_start - 1);
                                 }
 
@@ -2509,7 +2542,7 @@ private:
                                     !slot.prompt.tokens.has_mtmd;
 
                                 if (!can_cache_reuse && n_cache_reuse > 0) {
-                                    SLT_WRN(slot, "cache reuse is not supported - ignoring n_cache_reuse = %d\n", n_cache_reuse);
+                                    SLT_WRN(slot, "cache reuse is not supported - ignoring n_cache_reuse = "s+LOG_COL_BLUE+"%d"s+LOG_COL_YELLOW+"\n"s, n_cache_reuse);
                                 }
 
                                 // reuse chunks from the cached prompt by shifting their KV cache in the new position
@@ -2524,7 +2557,7 @@ private:
                                         GGML_ABORT("not supported by multimodal");
                                     }
 
-                                    SLT_DBG(slot, "trying to reuse chunks with size > %d, n_past = %d\n", n_cache_reuse, n_past);
+                                    SLT_DBG(slot, "trying to reuse chunks with size > "s+LOG_COL_BLUE+"%d"s+LOG_COL_MAGENTA+", n_past = "s+LOG_COL_BLUE+"%d"s+LOG_COL_MAGENTA+"\n"s, n_cache_reuse, n_past);
 
                                     while (head_c < slot.prompt.tokens.size() &&
                                            head_p < input_tokens.size()) {
@@ -2537,7 +2570,7 @@ private:
                                         }
 
                                         if (n_match >= (size_t) n_cache_reuse) {
-                                            SLT_INF(slot, "reusing chunk with size %zu, shifting KV cache [%zu, %zu) -> [%zu, %zu)\n", n_match, head_c, head_c + n_match, head_p, head_p + n_match);
+                                            SLT_TRC(slot, "reusing chunk with size "s+LOG_COL_BLUE+"%zu"s+LOG_COL_DEFAULT+", shifting KV cache ["s+LOG_COL_BLUE+"%zu"s+LOG_COL_DEFAULT+", "s+LOG_COL_BLUE+"%zu"s+LOG_COL_DEFAULT+") -> ["s+LOG_COL_BLUE+"%zu"s+LOG_COL_DEFAULT+", "s+LOG_COL_BLUE+"%zu"s+LOG_COL_DEFAULT+")\n"s, n_match, head_c, head_c + n_match, head_p, head_p + n_match);
                                             //for (size_t i = head_p; i < head_p + n_match; i++) {
                                             //    SLT_DBG(slot, "cache token %3zu: %6d '%s'\n", i, prompt_tokens[i], common_token_to_piece(ctx_tgt, prompt_tokens[i]).c_str());
                                             //}
@@ -2564,7 +2597,7 @@ private:
                                         }
                                     }
 
-                                    SLT_DBG(slot, "after context reuse, new n_past = %d\n", n_past);
+                                    SLT_DBG(slot, "after context reuse, new n_past = "s+LOG_COL_BLUE+"%d"s+LOG_COL_MAGENTA+"\n"s, n_past);
                                 }
                             } else {
                                 // if we don't cache the prompt, we have to remove all previous tokens
@@ -2579,7 +2612,7 @@ private:
                             if (n_past > 0 && n_past < slot.prompt.n_tokens()) {
                                 const auto pos_min = llama_memory_seq_pos_min(llama_get_memory(ctx_tgt), slot.id);
                                 if (pos_min == -1) {
-                                    SLT_ERR(slot, "n_past = %d, slot.prompt.tokens.size() = %d, seq_id = %d, pos_min = %d\n", n_past, (int) slot.prompt.tokens.size(), slot.id, pos_min);
+                                    SLT_ERR(slot, "n_past = "s+LOG_COL_BLUE+"%d"s+LOG_COL_RED+", slot.prompt.tokens.size() = "s+LOG_COL_BLUE+"%d"s+LOG_COL_RED+", seq_id = "s+LOG_COL_BLUE+"%d"s+LOG_COL_RED+", pos_min = "s+LOG_COL_BLUE+"%d"s+LOG_COL_RED+"\n"s, n_past, (int) slot.prompt.tokens.size(), slot.id, pos_min);
                                     GGML_ABORT("pos_min == -1, but n_past > 0 - should not happen: https://github.com/ggml-org/llama.cpp/pull/13833#discussion_r2116181237");
                                 }
 
@@ -2627,7 +2660,7 @@ private:
                                 }
 
                                 if (pos_min >= pos_min_thold) {
-                                    SLT_WRN(slot, "n_past = %d, slot.prompt.tokens.size() = %d, seq_id = %d, pos_min = %d, n_swa = %d\n", n_past, (int) slot.prompt.tokens.size(), slot.id, pos_min, n_swa);
+                                    SLT_WRN(slot, "n_past = "s+LOG_COL_BLUE+"%d"s+LOG_COL_YELLOW+", slot.prompt.tokens.size() = "s+LOG_COL_BLUE+"%d"s+LOG_COL_YELLOW+", seq_id = "s+LOG_COL_BLUE+"%d"s+LOG_COL_YELLOW+", pos_min = "s+LOG_COL_BLUE+"%d"s+LOG_COL_YELLOW+", n_swa = "s+LOG_COL_BLUE+"%d"s+LOG_COL_YELLOW+"\n"s, n_past, (int) slot.prompt.tokens.size(), slot.id, pos_min, n_swa);
 
                                     // search for a context checkpoint
                                     const auto it = std::find_if(
@@ -2635,7 +2668,7 @@ private:
                                         slot.prompt.checkpoints.rend(),
                                         [&, func_name = __func__](const auto & cur) {
                                             // guarantee that a checkpoint will result in at least one token being processed [TAG_PROMPT_LOGITS]
-                                            LOG_INF("slot %12.*s: id %2d | task %d | Checking checkpoint with [%d, %d] against %d...\n", 12,
+                                            LOG_INF("slot %12.*s: id %2d | task %d | Checking checkpoint with ["s+LOG_COL_BLUE+"%d"s+LOG_COL_DEFAULT+", "s+LOG_COL_BLUE+"%d"s+LOG_COL_DEFAULT+"] against "s+LOG_COL_BLUE+"%d"s+LOG_COL_DEFAULT+"...\n"s, 12,
                                                 func_name, (slot).id, ((slot).task ? (slot).task->id : -1), cur.pos_min, cur.pos_max, pos_min_thold);
                                             return cur.pos_min < pos_min_thold || cur.pos_min == 0;
                                         }
@@ -2651,7 +2684,7 @@ private:
 
                                         pos_next = std::min(pos_next, std::max(it->pos_min + 1, it->pos_max));
                                         n_past   = std::min(slot.prompt.tokens.size_up_to_pos(pos_next), (size_t) it->n_tokens);
-                                        SLT_WRN(slot, "restored context checkpoint (pos_min = %d, pos_max = %d, n_tokens = %" PRId64 ", n_past = %d, size = %.3f MiB)\n", it->pos_min, it->pos_max, it->n_tokens, n_past, (float) it->size() / 1024 / 1024);
+                                        SLT_WRN(slot, "restored checkpoint (pos_min = "s+LOG_COL_BLUE+"%d"s+LOG_COL_YELLOW+", pos_max = "s+LOG_COL_BLUE+"%d"s+LOG_COL_YELLOW+", n_tokens = %" PRId64 ", n_past = "s+LOG_COL_BLUE+"%d"s+LOG_COL_YELLOW+", size = "s+LOG_COL_BLUE+"%.3f"s+LOG_COL_YELLOW+" MiB)\n"s, it->pos_min, it->pos_max, it->n_tokens, n_past, (float) it->size() / 1024 / 1024);
                                     }
 
                                     if (do_reset) {
@@ -2668,7 +2701,7 @@ private:
                                 for (auto it = slot.prompt.checkpoints.begin(); it != slot.prompt.checkpoints.end();) {
                                     const auto & cur = *it;
                                     if (cur.pos_max > pos_next) {
-                                        SLT_WRN(slot, "erased invalidated context checkpoint (pos_min = %d, pos_max = %d, n_tokens = %" PRId64 ", n_swa = %d, pos_next = %d, size = %.3f MiB)\n", cur.pos_min, cur.pos_max, cur.n_tokens, n_swa, pos_next, (float) cur.size() / 1024 / 1024);
+                                        SLT_WRN(slot, "erased invalidated context checkpoint (pos_min = "s+LOG_COL_BLUE+"%d"s+LOG_COL_YELLOW+", pos_max = "s+LOG_COL_BLUE+"%d"s+LOG_COL_YELLOW+", n_tokens = %" PRId64 ", n_swa = "s+LOG_COL_BLUE+"%d"s+LOG_COL_YELLOW+", pos_next = "s+LOG_COL_BLUE+"%d"s+LOG_COL_YELLOW+", size = "s+LOG_COL_BLUE+"%.3f"s+LOG_COL_YELLOW+" MiB)\n"s, cur.pos_min, cur.pos_max, cur.n_tokens, n_swa, pos_next, (float) cur.size() / 1024 / 1024);
                                         it = slot.prompt.checkpoints.erase(it);
                                     } else {
                                         ++it;
@@ -2679,9 +2712,9 @@ private:
 
                         // [TAG_PROMPT_LOGITS]
                         if (n_past == slot.task->n_tokens() && n_past > 0) {
-                            SLT_WRN(slot, "need to evaluate at least 1 token for each active slot (n_past = %d, task.n_tokens() = %d)\n", n_past, slot.task->n_tokens());
+                            SLT_WRN(slot, "need to evaluate at least 1 token for each active slot (n_past = "s+LOG_COL_BLUE+"%d"s+LOG_COL_YELLOW+", task.n_tokens() = "s+LOG_COL_BLUE+"%d"s+LOG_COL_YELLOW+")\n"s, n_past, slot.task->n_tokens());
                             n_past--;
-                            SLT_WRN(slot, "n_past was set to %d\n", n_past);
+                            SLT_WRN(slot, "n_past was set to "s+LOG_COL_BLUE+"%d"s+LOG_COL_YELLOW+"\n"s, n_past);
                         }
 
                         slot.n_prompt_tokens_cache = n_past;
@@ -2702,11 +2735,15 @@ private:
                             continue;
                         }
                     }
+                    
+                    // const int64_t t_current = ggml_time_us();
+                    // slot.t_prompt_processing = (t_current - slot.t_start_process_prompt) / 1e3;
+                    // slot.print_timings_pp();
 
                     // truncate any tokens that are beyond n_past for this slot
                     const llama_pos p0 = slot.prompt.tokens.pos_next();
 
-                    SLT_INF(slot, "n_tokens = %d, memory_seq_rm [%d, end)\n", slot.prompt.n_tokens(), p0);
+                    SLT_TRC(slot, "cached n_tokens = "s+LOG_COL_BLUE+"%d"s+LOG_COL_DEFAULT+", memory_seq_rm ["s+LOG_COL_BLUE+"%d"s+LOG_COL_DEFAULT+", end)\n"s, slot.prompt.n_tokens(), p0);
 
                     if (!llama_memory_seq_rm(llama_get_memory(ctx_tgt), slot.id, p0, -1)) {
                         SLT_WRN(slot, "failed to truncate tokens with position >= %d - clearing the memory\n", p0);
@@ -2727,7 +2764,7 @@ private:
                     // processed without the adapter in a separate batch, then
                     // the adapter needs to be enabled for the remaining tokens.
                     if (lora_all_alora(slot.lora) && slot.alora_invocation_start - 1 > slot.prompt.n_tokens()) {
-                        SLT_DBG(slot, "processing pre-alora tokens without the adapter (n_tokens = %d, alora_invocation_start = %d)\n", slot.prompt.n_tokens(), slot.alora_invocation_start);
+                        SLT_DBG(slot, "processing pre-alora tokens without the adapter (n_tokens = "s+LOG_COL_BLUE+"%d"s+LOG_COL_MAGENTA+", alora_invocation_start = "s+LOG_COL_BLUE+"%d"s+LOG_COL_MAGENTA+")\n"s, slot.prompt.n_tokens(), slot.alora_invocation_start);
                         const auto & enabled_loras = lora_get_enabled_ids(slot.lora);
                         GGML_ASSERT(enabled_loras.size() == 1);
                         alora_scale = slot.lora[enabled_loras[0]].scale;
@@ -2756,7 +2793,7 @@ private:
                         size_t n_tokens_out = 0;
                         int32_t res = input_tokens.process_chunk(ctx_tgt, mctx, slot.prompt.n_tokens(), slot.prompt.tokens.pos_next(), slot.id, n_tokens_out);
                         if (res != 0) {
-                            SLT_ERR(slot, "failed to process image, res = %d\n", res);
+                            SLT_ERR(slot, "failed to process image, res = "s+LOG_COL_BLUE+"%d"s+LOG_COL_RED+"\n"s, res);
                             send_error(slot, "failed to process image", ERROR_TYPE_SERVER);
                             slot.release();
                             continue;
@@ -2795,7 +2832,7 @@ private:
                         // tokens that are not cached, we need to stop filling
                         // this batch at those pre-invocation tokens.
                         if (alora_scale > 0 && slot.prompt.n_tokens() == slot.alora_invocation_start - 1) {
-                            SLT_DBG(slot, "stop prompt batch filling at (n_tokens = %d, alora_invocation_start = %d)\n", slot.prompt.n_tokens(), slot.alora_invocation_start);
+                            SLT_DBG(slot, "stop prompt batch filling at (n_tokens = "s+LOG_COL_BLUE+"%d"s+LOG_COL_MAGENTA+", alora_invocation_start = %d)\n"s, slot.prompt.n_tokens(), slot.alora_invocation_start);
                             break;
                         }
 
@@ -2849,7 +2886,7 @@ private:
                         slot.i_batch   = batch.n_tokens - 1;
 
                         slot.init_sampler();
-                        SLT_INF(slot, "prompt processing done, n_tokens = %d, batch.n_tokens = %d\n", slot.prompt.n_tokens(), batch.n_tokens);
+                        SLT_INF(slot, LOG_COL_GREEN+"prompt processing done"s+LOG_COL_DEFAULT+", n_tokens = "s+LOG_COL_BLUE+"%d"s+LOG_COL_DEFAULT+", batch.n_tokens = "s+LOG_COL_BLUE+"%d"s+LOG_COL_DEFAULT+"\n", slot.prompt.n_tokens(), batch.n_tokens);
                     } else {
                         if (slot.task->n_tokens() < slot.prompt.n_tokens() + n_ubatch) {
                             // near the end of the prompt
@@ -2867,12 +2904,16 @@ private:
                                 do_checkpoint = do_checkpoint && slot.prompt.n_tokens() - batch.n_tokens - last_checkpoint >= params_base.checkpoint_every_nt;
 
                                 if (do_checkpoint) {
-                                    SLT_INF(slot, "%d tokens since last checkpoint at %d, creating new checkpoint during processing at position %d\n", params_base.checkpoint_every_nt, last_checkpoint, slot.prompt.n_tokens());
+                                    SLT_INF(slot, ""s+LOG_COL_BLUE+"%d"s+LOG_COL_DEFAULT+" tokens since last checkpoint at "s+LOG_COL_BLUE+"%d"s+LOG_COL_DEFAULT+", creating new checkpoint during processing at position "s+LOG_COL_BLUE+"%d"s+LOG_COL_DEFAULT+"\n"s, params_base.checkpoint_every_nt, last_checkpoint, slot.prompt.n_tokens());
                                 }
                             }
                         }
 
-                        SLT_INF(slot, "prompt processing progress, n_tokens = %d, batch.n_tokens = %d, progress = %f\n", slot.prompt.n_tokens(), batch.n_tokens, (float) slot.prompt.n_tokens() / slot.task->n_tokens());
+                        const int64_t t_current = ggml_time_us();
+                        slot.t_prompt_processing = (t_current - slot.t_start_process_prompt) / 1e3;
+                        slot.print_timings_pp();
+                        
+                        // SLT_INF(slot, "prompt processing, n_tokens = %d, batch.n_tokens = %d, progress = %f\n", slot.prompt.n_tokens(), batch.n_tokens, (float) slot.prompt.n_tokens() / slot.task->n_tokens());
                     }
 
                     const auto pos_min = llama_memory_seq_pos_min(llama_get_memory(ctx_tgt), slot.id);
@@ -2886,7 +2927,7 @@ private:
 
                     // no need to create checkpoints that are too close together
                     do_checkpoint = do_checkpoint && (slot.prompt.checkpoints.empty() || slot.prompt.n_tokens() - n_tokens_cur > slot.prompt.checkpoints.back().n_tokens + 64);
-                    SLT_DBG(slot, "main/do_checkpoint = %s, pos_min = %d, pos_max = %d\n", do_checkpoint ? "yes" : "no", pos_min, pos_max);
+                    SLT_DBG(slot, "main/do_checkpoint = %s, pos_min = "s+LOG_COL_BLUE+"%d"s+LOG_COL_MAGENTA+", pos_max = "s+LOG_COL_BLUE+"%d"s+LOG_COL_MAGENTA+"\n"s, do_checkpoint ? "yes"s : "no"s, pos_min, pos_max);
 
                     // note: we create the checkpoint before calling llama_decode(), so the current batch is not
                     //       yet processed and therefore it is not part of the checkpoint.
@@ -2905,7 +2946,7 @@ private:
             }
         }
 
-        SRV_DBG("decoding batch, n_tokens = %d\n", batch.n_tokens);
+        SRV_DBG("decoding batch, n_tokens = "s+LOG_COL_BLUE+"%d"s+LOG_COL_MAGENTA+"\n"s, batch.n_tokens);
 
         auto accept_special_token = [&](server_slot & slot, llama_token token) {
             return params_base.special ||
@@ -2978,7 +3019,7 @@ private:
                     // TODO: handle ret == 2 (abort) when we start aborting
 
                     if (!err.empty()) {
-                        SRV_ERR("%s i = %d, n_batch = %d, ret = %d\n", err.c_str(), i, n_batch, ret);
+                        SRV_ERR("%s i = "s+LOG_COL_BLUE+"%d"s+LOG_COL_RED+", n_batch = "s+LOG_COL_BLUE+"%d"s+LOG_COL_RED+", ret = "s+LOG_COL_BLUE+"%d"s+LOG_COL_RED+"\n"s, err.c_str(), i, n_batch, ret);
 
                         for (auto & slot : slots) {
                             if (slot.is_processing()) {
@@ -3000,7 +3041,7 @@ private:
                     n_batch /= 2;
                 }
 
-                SRV_WRN("failed to find free space in the KV cache, retrying with smaller batch size, i = %d, n_batch = %d, ret = %d\n", i, n_batch, ret);
+                SRV_WRN("failed to find free space in the KV cache, retrying with smaller batch size, i = "s+LOG_COL_BLUE+"%d"s+LOG_COL_YELLOW+", n_batch = "s+LOG_COL_BLUE+"%d"s+LOG_COL_YELLOW+", ret = "s+LOG_COL_BLUE+"%d"s+LOG_COL_YELLOW+"\n"s, i, n_batch, ret);
 
                 continue; // continue loop of n_batch
             }
@@ -3076,7 +3117,7 @@ private:
                     // all children slots should already launched by launch_slots_with_parent_task()
                     // copy state to the child slots
                     for (auto & child : children) {
-                        SLT_INF(slot, " - copying state to child %d\n", child->id);
+                        SLT_INF(slot, " - copying state to child "s+LOG_COL_BLUE+"%d"s+LOG_COL_DEFAULT+"\n"s, child->id);
 
                         GGML_ASSERT(child->state == SLOT_STATE_WAIT_OTHER);
 
@@ -3169,6 +3210,8 @@ private:
 
                     continue;
                 }
+                
+                slot.print_timings_tg();
             }
 
             // speculative decoding - main model sample and accept
@@ -3210,7 +3253,7 @@ private:
 
                             const auto & ckpt = slot.spec_ckpt;
 
-                            SLT_DBG(slot, "restoring speculative checkpoint (pos_min = %d, pos_max = %d, size = %zu)\n", ckpt.pos_min, ckpt.pos_max, ckpt.size());
+                            SLT_DBG(slot, "restoring speculative checkpoint (pos_min = "s+LOG_COL_BLUE+"%d"s+LOG_COL_MAGENTA+", pos_max = "s+LOG_COL_BLUE+"%d"s+LOG_COL_MAGENTA+", size = "s+LOG_COL_BLUE+"%zu"s+LOG_COL_MAGENTA+")\n"s, ckpt.pos_min, ckpt.pos_max, ckpt.size());
 
                             {
                                 ckpt.load_tgt(slot.ctx_tgt, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY | LLAMA_STATE_SEQ_FLAGS_ON_DEVICE);
@@ -3232,7 +3275,7 @@ private:
                     }
 
                     if (trace > 0) {
-                        SLT_INF(slot, "accepted %2zu/%2zu draft tokens\n", accepted.size() - 1, n_draft);
+                        SLT_INF(slot, "accepted "s+LOG_COL_BLUE+"%2zu"s+LOG_COL_DEFAULT+"/"s+LOG_COL_BLUE+"%2zu"s+LOG_COL_DEFAULT+" draft tokens\n"s, accepted.size() - 1, n_draft);
                     }
 
                     common_speculative_accept(spec.get(), slot.id, accepted.size() - 1);
@@ -3255,7 +3298,7 @@ private:
                 slot.prompt.tokens.insert({ids.begin(), ids.end() - 1});
 
                 slot.sampled = ids.back(); // last accepted token
-                SLT_DBG(slot, "add accepted tokens: sampled=%d, ids.size=%zu, n_draft=%zu\n", slot.sampled, ids.size(), n_draft);
+                SLT_DBG(slot, "add accepted tokens: sampled="s+LOG_COL_BLUE+"%d"s+LOG_COL_MAGENTA+", ids.size="s+LOG_COL_BLUE+"%zu"s+LOG_COL_MAGENTA+", n_draft="s+LOG_COL_BLUE+"%zu"s+LOG_COL_MAGENTA+"\n"s, slot.sampled, ids.size(), n_draft);
 
                 llama_memory_seq_rm(llama_get_memory(slot.ctx_tgt), slot.id, slot.prompt.tokens.pos_next(), -1);
                 if (slot.ctx_dft) {
@@ -3281,7 +3324,9 @@ private:
                     }
                 }
 
-                SLT_DBG(slot, "accepted %d/%d draft tokens, new n_tokens = %d\n", (int) ids.size() - 1, (int) n_draft, slot.prompt.n_tokens());
+                slot.print_timings_tg();
+
+                SLT_DBG(slot, "accepted "s+LOG_COL_BLUE+"%d"s+LOG_COL_MAGENTA+"/"s+LOG_COL_BLUE+"%d"s+LOG_COL_MAGENTA+" draft tokens, new n_tokens = "s+LOG_COL_BLUE+"%d"s+LOG_COL_MAGENTA+"\n"s, (int) ids.size() - 1, (int) n_draft, slot.prompt.n_tokens());
             }
         }
 
@@ -3949,7 +3994,7 @@ void server_routes::init_routes() {
 
         std::string prompt = json_value(data, "prompt", std::string());
         std::vector<server_tokens> tokenized_prompts = tokenize_input_prompts(ctx_server.vocab, ctx_server.mctx, prompt, false, true);
-        SRV_DBG("creating infill tasks, n_prompts = %d\n", (int) tokenized_prompts.size());
+        SRV_DBG("creating infill tasks, n_prompts = "s+LOG_COL_BLUE+"%d"s+LOG_COL_MAGENTA+"\n"s, (int) tokenized_prompts.size());
         data["prompt"] = format_prompt_infill(
             ctx_server.vocab,
             data.at("input_prefix"),
@@ -4522,7 +4567,7 @@ std::unique_ptr<server_res_generator> server_routes::handle_embeddings_impl(cons
     if (body.count("embd_normalize") != 0) {
         embd_normalize = body.at("embd_normalize");
         if (meta->pooling_type == LLAMA_POOLING_TYPE_NONE) {
-            SRV_DBG("embd_normalize is not supported by pooling type %d, ignoring it\n", meta->pooling_type);
+            SRV_DBG("embd_normalize is not supported by pooling type "s+LOG_COL_BLUE+"%d"s+LOG_COL_MAGENTA+", ignoring it\n"s, meta->pooling_type);
         }
     }
 

@@ -7,6 +7,7 @@
 #include "llama-mmap.h"
 #include "llama-cparams.h"
 #include "llama-model-loader.h"
+#include "../common/log.h"
 
 #include "llama-kv-cache.h"
 #include "llama-kv-cache-iswa.h"
@@ -1526,6 +1527,7 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
         ctx_buf_maps.emplace_back(ctx, buf_map);
     }
 
+    using namespace std::string_literals;
     if (llama_supports_gpu_offload()) {
         const int n_gpu = std::min(n_gpu_layers, int(hparams.n_layer));
 
@@ -1534,18 +1536,18 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
             LLAMA_LOG_INFO("%s: offloading output layer to GPU\n", __func__);
             n_repeating--;
         }
-        LLAMA_LOG_INFO("%s: offloading %d repeating layers to GPU\n", __func__, n_repeating);
+        LLAMA_LOG_INFO(("%s: offloading "s+LOG_COL_BLUE+"%d"s+LOG_COL_DEFAULT+" repeating layers to GPU\n"s).c_str(), __func__, n_repeating);
 
         const int max_backend_supported_layers = hparams.n_layer + 1;
         const int max_offloadable_layers       = hparams.n_layer + 1;
 
-        LLAMA_LOG_INFO("%s: offloaded %d/%d layers to GPU\n", __func__, std::min(n_gpu_layers, max_offloadable_layers), max_backend_supported_layers);
+        LLAMA_LOG_INFO(("%s: offloaded "s+LOG_COL_BLUE+"%d"s+LOG_COL_DEFAULT+"/"s+LOG_COL_BLUE+"%d"s+LOG_COL_DEFAULT+" layers to GPU\n"s).c_str(), __func__, std::min(n_gpu_layers, max_offloadable_layers), max_backend_supported_layers);
     }
 
     // print memory requirements per buffer type
     for (auto & [_, bufs] : pimpl->ctxs_bufs) {
         for (auto & buf: bufs) {
-            LLAMA_LOG_INFO("%s: %12s model buffer size = %8.2f MiB\n",
+            LLAMA_LOG_INFO(("%s: "s+LOG_COL_GREEN+"%12s"s+LOG_COL_DEFAULT+" model buffer size = "s+LOG_COL_BLUE+"%8.2f"s+LOG_COL_DEFAULT+" MiB\n"s).c_str(),
                 __func__, ggml_backend_buffer_name(buf.get()), ggml_backend_buffer_get_size(buf.get()) / 1024.0 / 1024.0);
         }
     }

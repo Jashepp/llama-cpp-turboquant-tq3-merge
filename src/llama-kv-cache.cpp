@@ -4,6 +4,7 @@
 #include "llama-io.h"
 #include "llama-model.h"
 #include "llama-context.h"
+#include "../common/log.h"
 
 #include <algorithm>
 #include <cassert>
@@ -482,7 +483,8 @@ llama_kv_cache::llama_kv_cache(
             throw std::runtime_error("failed to allocate buffer for kv cache");
         }
 
-        LLAMA_LOG_INFO("%s: %10s KV buffer size = %8.2f MiB\n", __func__, ggml_backend_buffer_name(buf), ggml_backend_buffer_get_size(buf)/1024.0/1024.0);
+        using namespace std::string_literals;
+        LLAMA_LOG_INFO(("%s: "s+LOG_COL_GREEN+"%10s"s+LOG_COL_DEFAULT+" KV buffer size = "s+LOG_COL_BLUE+"%8.2f"s+LOG_COL_DEFAULT+" MiB\n"s).c_str(), __func__, ggml_backend_buffer_name(buf), ggml_backend_buffer_get_size(buf)/1024.0/1024.0);
 
         ggml_backend_buffer_clear(buf, 0);
 
@@ -514,7 +516,8 @@ llama_kv_cache::llama_kv_cache(
         const size_t memory_size_k = size_k_bytes();
         const size_t memory_size_v = size_v_bytes();
 
-        LLAMA_LOG_INFO("%s: size = %7.2f MiB (%6u cells, %3d layers, %2u/%u seqs), K (%s): %7.2f MiB, V (%s): %7.2f MiB\n", __func__,
+        using namespace std::string_literals;
+        LLAMA_LOG_INFO(("%s: size = "s+LOG_COL_BLUE+"%7.2f"s+LOG_COL_DEFAULT+" MiB (%6u cells, %3d layers, %2u/%u seqs), K ("s+LOG_COL_GREEN+"%s"s+LOG_COL_DEFAULT+"): "s+LOG_COL_BLUE+"%7.2f"s+LOG_COL_DEFAULT+" MiB, V ("s+LOG_COL_GREEN+"%s"s+LOG_COL_DEFAULT+"): "s+LOG_COL_BLUE+"%7.2f"s+LOG_COL_DEFAULT+" MiB\n"s).c_str(), __func__,
                 (float)(memory_size_k + memory_size_v) / (1024.0f * 1024.0f), kv_size, (int) layers.size(), n_seq_max, n_stream,
                 ggml_type_name(type_k), (float)memory_size_k / (1024.0f * 1024.0f),
                 ggml_type_name(type_v), (float)memory_size_v / (1024.0f * 1024.0f));

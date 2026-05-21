@@ -59,6 +59,13 @@ void llama_log_internal(ggml_log_level level, const char * format, ...) {
     va_end(args);
 }
 
+void llama_log_internal(ggml_log_level level, const std::string & format, ...) {
+    va_list args;
+    va_start(args, format.c_str());
+    llama_log_internal_v(level, format.c_str(), args);
+    va_end(args);
+}
+
 void llama_log_callback_default(ggml_log_level level, const char * text, void * user_data) {
     (void) level;
     (void) user_data;
